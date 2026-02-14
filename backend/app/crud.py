@@ -13,6 +13,10 @@ DEFAULT_TAX_CONFIG = {
         "search_button_selector": None,
         "results_container_selector": None,
         "balance_regex": r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)",
+        "pre_steps": [],
+        "checkpoint_selector": None,
+        "checkpoint_min_count": None,
+        "stop_after_checkpoint": False,
     },
 }
 

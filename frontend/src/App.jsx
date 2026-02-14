@@ -10,6 +10,10 @@ const EMPTY_CONFIG = {
     search_button_selector: '',
     results_container_selector: '',
     balance_regex: '',
+    pre_steps: [],
+    checkpoint_selector: '',
+    checkpoint_min_count: '',
+    stop_after_checkpoint: false,
   },
 }
 
@@ -22,6 +26,7 @@ export default function App() {
   const [bots, setBots] = useState([])
   const [notifications, setNotifications] = useState([])
   const [config, setConfig] = useState(EMPTY_CONFIG)
+  const [preStepsJson, setPreStepsJson] = useState('[]')
   const [showConfig, setShowConfig] = useState(false)
   const [savingConfig, setSavingConfig] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -37,15 +42,21 @@ export default function App() {
   const loadConfig = async () => {
     const res = await fetch(`${API_BASE}/api/bots/tax/config`)
     const data = await res.json()
-    setConfig({
+    const normalized = {
       ...data,
       portal_profile: {
         parcel_selector: data.portal_profile?.parcel_selector || '',
         search_button_selector: data.portal_profile?.search_button_selector || '',
         results_container_selector: data.portal_profile?.results_container_selector || '',
         balance_regex: data.portal_profile?.balance_regex || '',
+        pre_steps: data.portal_profile?.pre_steps || [],
+        checkpoint_selector: data.portal_profile?.checkpoint_selector || '',
+        checkpoint_min_count: data.portal_profile?.checkpoint_min_count?.toString() || '',
+        stop_after_checkpoint: Boolean(data.portal_profile?.stop_after_checkpoint),
       },
-    })
+    }
+    setConfig(normalized)
+    setPreStepsJson(JSON.stringify(normalized.portal_profile.pre_steps, null, 2))
   }
 
   const loadNotifications = async () => {
@@ -101,6 +112,11 @@ export default function App() {
     setSavingConfig(true)
     setError('')
     try {
+      const parsedPreSteps = JSON.parse(preStepsJson || '[]')
+      if (!Array.isArray(parsedPreSteps)) {
+        throw new Error('Pre-steps JSON must be an array')
+      }
+
       const payload = {
         parcel_id: config.parcel_id,
         portal_url: config.portal_url,
@@ -109,6 +125,12 @@ export default function App() {
           search_button_selector: config.portal_profile.search_button_selector || null,
           results_container_selector: config.portal_profile.results_container_selector || null,
           balance_regex: config.portal_profile.balance_regex || null,
+          pre_steps: parsedPreSteps,
+          checkpoint_selector: config.portal_profile.checkpoint_selector || null,
+          checkpoint_min_count: config.portal_profile.checkpoint_min_count
+            ? Number(config.portal_profile.checkpoint_min_count)
+            : null,
+          stop_after_checkpoint: Boolean(config.portal_profile.stop_after_checkpoint),
         },
       }
       const res = await fetch(`${API_BASE}/api/bots/tax/config`, {
@@ -179,6 +201,35 @@ export default function App() {
                     <label>
                       Balance Regex (optional)
                       <input value={config.portal_profile.balance_regex} onChange={(e) => updateProfile('balance_regex', e.target.value)} />
+                    </label>
+                    <label>
+                      Pre-steps JSON (optional)
+                      <textarea
+                        rows={8}
+                        value={preStepsJson}
+                        onChange={(e) => setPreStepsJson(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      Checkpoint Selector (optional)
+                      <input value={config.portal_profile.checkpoint_selector} onChange={(e) => updateProfile('checkpoint_selector', e.target.value)} />
+                    </label>
+                    <label>
+                      Checkpoint Min Count (optional)
+                      <input
+                        type="number"
+                        min="1"
+                        value={config.portal_profile.checkpoint_min_count}
+                        onChange={(e) => updateProfile('checkpoint_min_count', e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={config.portal_profile.stop_after_checkpoint}
+                        onChange={(e) => updateProfile('stop_after_checkpoint', e.target.checked)}
+                      />{' '}
+                      Stop after checkpoint proof (for flow validation)
                     </label>
                     <button onClick={saveConfig} disabled={savingConfig}>
                       {savingConfig ? 'Saving...' : 'Save'}
