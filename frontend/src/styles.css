@@ -62,7 +62,8 @@ label {
   font-size: 14px;
 }
 
-input {
+input,
+textarea {
   padding: 8px;
   border-radius: 6px;
   border: 1px solid #d1d5db;
