@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+import os
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -17,6 +19,7 @@ async def lifespan(_: FastAPI):
 
     db = SessionLocal()
     try:
+        os.makedirs("/artifacts", exist_ok=True)
         crud.seed_tax_bot(db)
     finally:
         db.close()
@@ -24,6 +27,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Agents Dashboard API", lifespan=lifespan)
+os.makedirs("/artifacts", exist_ok=True)
+app.mount("/api/artifacts", StaticFiles(directory="/artifacts"), name="artifacts")
 
 app.add_middleware(
     CORSMiddleware,
@@ -72,6 +77,15 @@ def run_tax(db: Session = Depends(get_db)):
     if result["status"] == "error":
         raise HTTPException(status_code=500, detail=result["message"])
     return result
+
+
+@app.get("/api/bots/tax/runs/{run_id}", response_model=schemas.TaxRunDetails)
+def get_tax_run_details(run_id: int, db: Session = Depends(get_db)):
+    bot = get_tax_bot_or_404(db)
+    details = crud.get_tax_run_details(db, bot.id, run_id)
+    if not details:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return details
 
 
 @app.get("/api/notifications", response_model=list[schemas.NotificationItem])

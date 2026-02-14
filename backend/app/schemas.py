@@ -12,6 +12,8 @@ class BotSummary(BaseModel):
     current_balance_due: Decimal | None = None
     previous_balance_due: Decimal | None = None
     changed: bool = False
+    mode: str | None = None
+    run_type: str | None = None
 
     class Config:
         from_attributes = True
@@ -24,8 +26,25 @@ class TaxRunResult(BaseModel):
     snapshot_id: int | None = None
     changed: bool = False
     message: str
+    mode: str | None = None
+    run_type: str | None = None
     current_balance_due: Decimal | None = None
     previous_balance_due: Decimal | None = None
+    details: dict = Field(default_factory=dict)
+
+
+class TaxRunDetails(BaseModel):
+    run_id: int
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    error: str | None = None
+    snapshot_id: int | None = None
+    mode: str | None = None
+    run_type: str | None = None
+    current_balance_due: Decimal | None = None
+    previous_balance_due: Decimal | None = None
+    details: dict = Field(default_factory=dict)
 
 
 class PortalProfile(BaseModel):

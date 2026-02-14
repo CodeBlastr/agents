@@ -69,6 +69,7 @@ def list_bot_summaries(db: Session) -> list[dict]:
         previous = None
         changed = False
         if latest:
+            latest_raw = latest.raw_json or {}
             previous = (
                 db.query(TaxSnapshot)
                 .filter(
@@ -100,6 +101,8 @@ def list_bot_summaries(db: Session) -> list[dict]:
                 "current_balance_due": latest.balance_due if latest else None,
                 "previous_balance_due": previous.balance_due if previous else None,
                 "changed": changed,
+                "mode": latest_raw.get("mode") if latest else None,
+                "run_type": latest_raw.get("run_type") if latest else None,
             }
         )
     return summaries
@@ -163,3 +166,47 @@ def create_notification(db: Session, bot_id: int, message: str, channel: str = "
     db.commit()
     db.refresh(notification)
     return notification
+
+
+def get_tax_run_details(db: Session, bot_id: int, run_id: int) -> dict | None:
+    run = db.query(BotRun).filter(BotRun.id == run_id, BotRun.bot_id == bot_id).first()
+    if not run:
+        return None
+
+    snapshot_query = db.query(TaxSnapshot).filter(TaxSnapshot.bot_id == bot_id)
+    if run.finished_at is not None:
+        snapshot_query = snapshot_query.filter(
+            TaxSnapshot.created_at >= run.started_at,
+            TaxSnapshot.created_at <= run.finished_at,
+        )
+    snapshot = snapshot_query.order_by(desc(TaxSnapshot.created_at)).first()
+    previous = None
+    if snapshot:
+        previous = (
+            db.query(TaxSnapshot)
+            .filter(
+                and_(
+                    TaxSnapshot.bot_id == bot_id,
+                    TaxSnapshot.parcel_id == snapshot.parcel_id,
+                    TaxSnapshot.portal_url == snapshot.portal_url,
+                    TaxSnapshot.id != snapshot.id,
+                )
+            )
+            .order_by(desc(TaxSnapshot.created_at))
+            .first()
+        )
+
+    raw = (snapshot.raw_json if snapshot else {}) or {}
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "error": run.error,
+        "snapshot_id": snapshot.id if snapshot else None,
+        "mode": raw.get("mode"),
+        "run_type": raw.get("run_type"),
+        "current_balance_due": snapshot.balance_due if snapshot else None,
+        "previous_balance_due": previous.balance_due if previous else None,
+        "details": raw,
+    }

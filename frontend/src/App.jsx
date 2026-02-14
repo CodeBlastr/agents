@@ -22,6 +22,26 @@ function fmt(value) {
   return value
 }
 
+function modeLabel(mode) {
+  if (!mode) return 'unknown'
+  return mode.toUpperCase()
+}
+
+function toArtifactUrl(path) {
+  if (!path) return ''
+  if (path.startsWith('/artifacts/')) {
+    return `${API_BASE}/api/artifacts/${path.replace('/artifacts/', '')}`
+  }
+  return path
+}
+
+function collectArtifactPaths(details) {
+  const artifacts = details?.artifacts || {}
+  return Object.entries(artifacts)
+    .filter(([, value]) => typeof value === 'string' && value.length > 0)
+    .map(([key, value]) => ({ key, path: value, url: toArtifactUrl(value) }))
+}
+
 export default function App() {
   const [bots, setBots] = useState([])
   const [notifications, setNotifications] = useState([])
@@ -32,6 +52,8 @@ export default function App() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [running, setRunning] = useState(false)
+  const [lastRunResult, setLastRunResult] = useState(null)
+  const [lastRunDetails, setLastRunDetails] = useState(null)
 
   const loadBots = async () => {
     const res = await fetch(`${API_BASE}/api/bots`)
@@ -65,6 +87,13 @@ export default function App() {
     setNotifications(data)
   }
 
+  const loadRunDetails = async (runId) => {
+    const res = await fetch(`${API_BASE}/api/bots/tax/runs/${runId}`)
+    if (!res.ok) return
+    const data = await res.json()
+    setLastRunDetails(data)
+  }
+
   const loadAll = async () => {
     setLoading(true)
     try {
@@ -89,6 +118,11 @@ export default function App() {
       if (!res.ok) {
         const body = await res.json()
         throw new Error(body.detail || 'Run failed')
+      }
+      const data = await res.json()
+      setLastRunResult(data)
+      if (data?.run_id) {
+        await loadRunDetails(data.run_id)
       }
       await Promise.all([loadBots(), loadNotifications()])
     } catch (e) {
@@ -150,6 +184,8 @@ export default function App() {
     }
   }
 
+  const artifactItems = collectArtifactPaths(lastRunDetails?.details)
+
   return (
     <main className="container">
       <h1>Agents Dashboard</h1>
@@ -161,6 +197,8 @@ export default function App() {
             <h2>{bot.name}</h2>
             <p><strong>Last Run:</strong> {fmt(bot.last_run)}</p>
             <p><strong>Status:</strong> {fmt(bot.last_status)}</p>
+            <p><strong>Run mode:</strong> <span className={`mode-badge mode-${(bot.mode || 'unknown').toLowerCase()}`}>{modeLabel(bot.mode)}</span></p>
+            <p><strong>Run type:</strong> {fmt(bot.run_type)}</p>
             <p><strong>Current Balance:</strong> {fmt(bot.current_balance_due)}</p>
             <p><strong>Previous Balance:</strong> {fmt(bot.previous_balance_due)}</p>
             <p><strong>Changed:</strong> {bot.changed ? 'yes' : 'no'}</p>
@@ -241,6 +279,49 @@ export default function App() {
           </article>
         ))}
       </section>
+
+      {lastRunResult && (
+        <section className="notifications">
+          <h3>Last Run Details</h3>
+          <p><strong>Run ID:</strong> {fmt(lastRunResult.run_id)}</p>
+          <p><strong>Status:</strong> {fmt(lastRunResult.status)}</p>
+          <p><strong>Mode:</strong> <span className={`mode-badge mode-${(lastRunResult.mode || 'unknown').toLowerCase()}`}>{modeLabel(lastRunResult.mode)}</span></p>
+          <p><strong>Run Type:</strong> {fmt(lastRunResult.run_type)}</p>
+          {lastRunResult.run_type === 'checkpoint_only' ? (
+            <p><strong>Balance:</strong> Checkpoint validated; no balance extracted in this run.</p>
+          ) : (
+            <>
+              <p><strong>Current Balance:</strong> {fmt(lastRunResult.current_balance_due)}</p>
+              <p><strong>Previous Balance:</strong> {fmt(lastRunResult.previous_balance_due)}</p>
+            </>
+          )}
+          <p><strong>Changed:</strong> {lastRunResult.changed ? 'yes' : 'no'}</p>
+          <p><strong>Message:</strong> {fmt(lastRunResult.message)}</p>
+
+          {lastRunDetails?.details?.checkpoint_selector && (
+            <div className="run-proof">
+              <h4>Checkpoint Proof</h4>
+              <p><strong>Selector:</strong> {fmt(lastRunDetails.details.checkpoint_selector)}</p>
+              <p><strong>Count:</strong> {fmt(lastRunDetails.details.checkpoint_count)}</p>
+              <p><strong>Min Count:</strong> {fmt(lastRunDetails.details.checkpoint_min_count)}</p>
+              <p><strong>URL:</strong> {fmt(lastRunDetails.details.checkpoint_url)}</p>
+              <p><strong>Excerpt:</strong> {fmt(lastRunDetails.details.checkpoint_text_excerpt)}</p>
+            </div>
+          )}
+
+          {artifactItems.length > 0 && (
+            <div className="run-proof">
+              <h4>Run Screenshots</h4>
+              {artifactItems.map((item) => (
+                <figure key={item.key}>
+                  <figcaption><strong>{item.key}</strong> — {item.path}</figcaption>
+                  <img src={item.url} alt={item.key} className="artifact-image" />
+                </figure>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <section className="notifications">
         <h3>Notifications</h3>
