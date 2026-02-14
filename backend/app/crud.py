@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
 
-from app.models import Bot, BotConfig, BotRun, Notification, TaxSnapshot
+from app.models import Bot, BotConfig, BotRun, Notification, TaxPropertyDetail, TaxSnapshot
 
 DEFAULT_TAX_CONFIG = {
     "parcel_id": "DEMO",
@@ -17,6 +18,11 @@ DEFAULT_TAX_CONFIG = {
         "checkpoint_selector": None,
         "checkpoint_min_count": None,
         "stop_after_checkpoint": False,
+        "scraper_mode": "real",
+        "results_row_selector": "table tr",
+        "row_first_link_selector": "td:first-child a",
+        "detail_table_selector": "table",
+        "max_properties": 3,
     },
 }
 
@@ -152,6 +158,28 @@ def latest_previous_snapshot(db: Session, bot_id: int, parcel_id: str, portal_ur
     )
 
 
+
+
+def create_tax_property_details(db: Session, bot_id: int, run_id: int, properties: list[dict]) -> list[TaxPropertyDetail]:
+    records: list[TaxPropertyDetail] = []
+    for item in properties:
+        address = item.get("property_address") or "Unknown"
+        total_due = Decimal(str(item.get("total_due") or "0.00"))
+        record = TaxPropertyDetail(
+            run_id=run_id,
+            bot_id=bot_id,
+            property_number=item.get("property_number"),
+            tax_map=item.get("tax_map"),
+            property_address=address,
+            total_due=total_due,
+            detail_json=item,
+        )
+        db.add(record)
+        records.append(record)
+    db.commit()
+    for record in records:
+        db.refresh(record)
+    return records
 def create_snapshot(db: Session, bot_id: int, data: dict) -> TaxSnapshot:
     snapshot = TaxSnapshot(bot_id=bot_id, **data)
     db.add(snapshot)
@@ -197,6 +225,13 @@ def get_tax_run_details(db: Session, bot_id: int, run_id: int) -> dict | None:
         )
 
     raw = (snapshot.raw_json if snapshot else {}) or {}
+    property_rows = (
+        db.query(TaxPropertyDetail)
+        .filter(TaxPropertyDetail.run_id == run.id, TaxPropertyDetail.bot_id == bot_id)
+        .order_by(TaxPropertyDetail.id.asc())
+        .all()
+    )
+
     return {
         "run_id": run.id,
         "status": run.status,
@@ -209,4 +244,15 @@ def get_tax_run_details(db: Session, bot_id: int, run_id: int) -> dict | None:
         "current_balance_due": snapshot.balance_due if snapshot else None,
         "previous_balance_due": previous.balance_due if previous else None,
         "details": raw,
+        "property_details": [
+            {
+                "id": row.id,
+                "property_number": row.property_number,
+                "tax_map": row.tax_map,
+                "property_address": row.property_address,
+                "total_due": row.total_due,
+                "detail_json": row.detail_json,
+            }
+            for row in property_rows
+        ],
     }

@@ -25,6 +25,10 @@ def run_tax_bot(db: Session, bot: Bot, config: dict, run_id: int | None = None, 
         previous = crud.latest_previous_snapshot(db, bot.id, parsed["parcel_id"], parsed["portal_url"])
         snapshot = crud.create_snapshot(db, bot.id, parsed)
 
+        property_details = (parsed.get("raw_json") or {}).get("property_details") or []
+        if property_details:
+            crud.create_tax_property_details(db, bot.id, run.id, property_details)
+
         changed = False
         previous_balance = None
         if previous:
@@ -60,6 +64,16 @@ def run_tax_bot(db: Session, bot: Bot, config: dict, run_id: int | None = None, 
             "current_balance_due": snapshot.balance_due,
             "previous_balance_due": previous_balance,
             "details": snapshot.raw_json,
+            "property_details": [
+                {
+                    "property_number": item.get("property_number"),
+                    "tax_map": item.get("tax_map"),
+                    "property_address": item.get("property_address") or "Unknown",
+                    "total_due": item.get("total_due") or "0.00",
+                    "detail_json": item,
+                }
+                for item in property_details
+            ],
         }
         if event_callback:
             event_callback({"type": "run_finished", "run_id": run.id, "status": "success", "result": result})
@@ -78,6 +92,7 @@ def run_tax_bot(db: Session, bot: Bot, config: dict, run_id: int | None = None, 
             "current_balance_due": None,
             "previous_balance_due": None,
             "details": {"error": str(exc)},
+            "property_details": [],
         }
         if event_callback:
             event_callback({"type": "run_finished", "run_id": run.id, "status": "error", "result": result})

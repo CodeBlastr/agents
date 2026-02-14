@@ -14,6 +14,11 @@ const EMPTY_CONFIG = {
     checkpoint_selector: '',
     checkpoint_min_count: '',
     stop_after_checkpoint: false,
+    scraper_mode: 'real',
+    results_row_selector: 'table tr',
+    row_first_link_selector: 'td:first-child a',
+    detail_table_selector: 'table',
+    max_properties: '3',
   },
 }
 
@@ -72,6 +77,7 @@ export default function App() {
   const [lastRunDetails, setLastRunDetails] = useState(null)
   const [liveScreenshots, setLiveScreenshots] = useState([])
   const [liveRunInfo, setLiveRunInfo] = useState(null)
+  const [livePropertyTotals, setLivePropertyTotals] = useState([])
 
   const streamRef = useRef(null)
 
@@ -95,6 +101,11 @@ export default function App() {
         checkpoint_selector: data.portal_profile?.checkpoint_selector || '',
         checkpoint_min_count: data.portal_profile?.checkpoint_min_count?.toString() || '',
         stop_after_checkpoint: Boolean(data.portal_profile?.stop_after_checkpoint),
+        scraper_mode: data.portal_profile?.scraper_mode || 'real',
+        results_row_selector: data.portal_profile?.results_row_selector || 'table tr',
+        row_first_link_selector: data.portal_profile?.row_first_link_selector || 'td:first-child a',
+        detail_table_selector: data.portal_profile?.detail_table_selector || 'table',
+        max_properties: data.portal_profile?.max_properties?.toString() || '3',
       },
     }
     setConfig(normalized)
@@ -112,6 +123,12 @@ export default function App() {
     if (!res.ok) return
     const data = await res.json()
     setLastRunDetails(data)
+    if (Array.isArray(data.property_details)) {
+      setLivePropertyTotals(data.property_details.map((row) => ({
+        property_address: row.property_address,
+        total_due: row.total_due,
+      })))
+    }
   }
 
   const loadAll = async () => {
@@ -147,6 +164,19 @@ export default function App() {
     })
   }
 
+  const upsertLiveProperty = (payload) => {
+    if (!payload?.property_address) return
+    setLivePropertyTotals((prev) => {
+      const idx = prev.findIndex((item) => item.property_address === payload.property_address)
+      const next = {
+        property_address: payload.property_address,
+        total_due: payload.total_due,
+      }
+      if (idx === -1) return [...prev, next]
+      return prev.map((item, i) => i === idx ? next : item)
+    })
+  }
+
   const connectRunStream = (runId) => {
     if (streamRef.current) {
       streamRef.current.close()
@@ -160,6 +190,10 @@ export default function App() {
 
       if (payload.type === 'screenshot_created') {
         appendLiveScreenshot(payload)
+      }
+
+      if (payload.type === 'property_scraped') {
+        upsertLiveProperty(payload)
       }
 
       if (payload.type === 'run_finished') {
@@ -188,6 +222,7 @@ export default function App() {
     setLiveRunInfo(null)
     setLastRunResult(null)
     setLastRunDetails(null)
+    setLivePropertyTotals([])
     try {
       const res = await fetch(`${API_BASE}/api/bots/tax/run/start`, { method: 'POST' })
       if (!res.ok) {
@@ -235,6 +270,11 @@ export default function App() {
             ? Number(config.portal_profile.checkpoint_min_count)
             : null,
           stop_after_checkpoint: Boolean(config.portal_profile.stop_after_checkpoint),
+          scraper_mode: config.portal_profile.scraper_mode || 'real',
+          results_row_selector: config.portal_profile.results_row_selector || 'table tr',
+          row_first_link_selector: config.portal_profile.row_first_link_selector || 'td:first-child a',
+          detail_table_selector: config.portal_profile.detail_table_selector || 'table',
+          max_properties: config.portal_profile.max_properties ? Number(config.portal_profile.max_properties) : 3,
         },
       }
       const res = await fetch(`${API_BASE}/api/bots/tax/config`, {
@@ -280,6 +320,30 @@ export default function App() {
                     {running && (
                       <p><strong>Live Event:</strong> {fmt(liveRunInfo?.type)}</p>
                     )}
+
+                    <div className="property-table-wrap">
+                      <h4>Property Address | Total Due</h4>
+                      {livePropertyTotals.length === 0 ? (
+                        <p>No properties scraped yet.</p>
+                      ) : (
+                        <table className="property-table">
+                          <thead>
+                            <tr>
+                              <th>Property Address</th>
+                              <th>Total Due</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {livePropertyTotals.map((row, idx) => (
+                              <tr key={`${row.property_address}-${idx}`}>
+                                <td>{row.property_address}</td>
+                                <td>{row.total_due}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
                   </div>
                   <div className="live-stream-panel">
                     <h4>Live Screens</h4>
@@ -312,6 +376,29 @@ export default function App() {
                     <label>
                       Portal URL
                       <input value={config.portal_url} onChange={(e) => setConfig((c) => ({ ...c, portal_url: e.target.value }))} />
+                    </label>
+                    <label>
+                      Scraper Mode
+                      <select value={config.portal_profile.scraper_mode} onChange={(e) => updateProfile('scraper_mode', e.target.value)}>
+                        <option value="real">Use Real Scraper</option>
+                        <option value="stub">Use Stub Scraper</option>
+                      </select>
+                    </label>
+                    <label>
+                      Results Row Selector
+                      <input value={config.portal_profile.results_row_selector} onChange={(e) => updateProfile('results_row_selector', e.target.value)} />
+                    </label>
+                    <label>
+                      Row First Link Selector
+                      <input value={config.portal_profile.row_first_link_selector} onChange={(e) => updateProfile('row_first_link_selector', e.target.value)} />
+                    </label>
+                    <label>
+                      Detail Table Selector
+                      <input value={config.portal_profile.detail_table_selector} onChange={(e) => updateProfile('detail_table_selector', e.target.value)} />
+                    </label>
+                    <label>
+                      Max Properties
+                      <input type="number" min="1" value={config.portal_profile.max_properties} onChange={(e) => updateProfile('max_properties', e.target.value)} />
                     </label>
                     <label>
                       Parcel Selector (optional)

@@ -33,6 +33,7 @@ class BotRun(Base):
     error = Column(Text)
 
     bot = relationship("Bot", back_populates="runs")
+    property_details = relationship("TaxPropertyDetail", back_populates="run")
 
 
 class TaxSnapshot(Base):
@@ -75,3 +76,19 @@ class BotConfig(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     bot = relationship("Bot", back_populates="configs")
+
+
+class TaxPropertyDetail(Base):
+    __tablename__ = "tax_property_details"
+
+    id = Column(Integer, primary_key=True, index=True)
+    run_id = Column(Integer, ForeignKey("bot_runs.id"), nullable=False, index=True)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    property_number = Column(String(255), nullable=True)
+    tax_map = Column(String(255), nullable=True)
+    property_address = Column(String(1024), nullable=False)
+    total_due = Column(Numeric(12, 2), nullable=False)
+    detail_json = Column(JSON, nullable=False)
+
+    run = relationship("BotRun", back_populates="property_details")
