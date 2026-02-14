@@ -549,6 +549,7 @@ async def scrape_tax_portal(
     raw_max_properties = portal_profile.get("max_properties")
     max_properties = int(raw_max_properties) if raw_max_properties is not None else 0
     direct_property_urls = [str(item).strip() for item in (portal_profile.get("direct_property_urls") or []) if str(item).strip()]
+    use_direct_urls = len(direct_property_urls) > 0
 
     page = None
     artifacts: list[dict] = []
@@ -558,6 +559,12 @@ async def scrape_tax_portal(
             page = await browser.new_page()
             await page.goto(portal_url, wait_until="networkidle", timeout=30000)
             await _capture_artifact(page, run_id, "initial_page", artifacts, event_callback)
+
+            if use_direct_urls and event_callback:
+                event_callback({
+                    "type": "direct_urls_mode",
+                    "direct_url_count": len(direct_property_urls),
+                })
 
             await _run_pre_steps(page, pre_steps, run_id, artifacts, event_callback)
             checkpoint = await _checkpoint_proof(page, checkpoint_selector, checkpoint_min_count)
@@ -593,12 +600,12 @@ async def scrape_tax_portal(
                     },
                 }
 
-            if parcel_selector:
+            if not use_direct_urls and parcel_selector:
                 candidate = page.locator(parcel_selector).first
                 if await candidate.count() > 0:
                     await candidate.fill(parcel_id)
 
-            if search_selector:
+            if not use_direct_urls and search_selector:
                 button = page.locator(search_selector).first
                 if await button.count() > 0:
                     await button.click()
@@ -606,7 +613,7 @@ async def scrape_tax_portal(
                     if results_selector:
                         await page.locator(results_selector).first.wait_for(timeout=10000)
 
-            if direct_property_urls:
+            if use_direct_urls:
                 property_details, aggregate_total = await _scrape_direct_property_urls(
                     page,
                     run_id,
@@ -630,6 +637,10 @@ async def scrape_tax_portal(
                 )
 
             if not property_details:
+                if use_direct_urls:
+                    raise RuntimeError(
+                        f"No property details extracted from direct_property_urls ({len(direct_property_urls)} url(s))."
+                    )
                 body_text = await page.inner_text("body")
                 sample = body_text[:500]
                 match = re.search(balance_regex, body_text)
@@ -652,7 +663,7 @@ async def scrape_tax_portal(
             await browser.close()
             return {
                 "mode": "real",
-                "run_type": "multi_property_extract" if property_details else "full_extract",
+                "run_type": "direct_property_urls_extract" if use_direct_urls else ("multi_property_extract" if property_details else "full_extract"),
                 "parcel_id": parcel_id,
                 "portal_url": portal_url,
                 "balance_due": aggregate_total,
@@ -664,6 +675,8 @@ async def scrape_tax_portal(
                     "parcel_id": parcel_id,
                     "extracted_text_sample": extracted_text_sample,
                     "regex_used": balance_regex,
+                    "used_direct_property_urls": use_direct_urls,
+                    "direct_property_urls_count": len(direct_property_urls),
                     "property_details": property_details,
                     "artifacts": {
                         "result_screenshot": success_path,
