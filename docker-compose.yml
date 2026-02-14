@@ -21,6 +21,9 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@postgres:5432/agents}
       USE_REAL_SCRAPER: ${USE_REAL_SCRAPER:-0}
+      TAXBOT_ERROR_SCREENSHOT_PATH: ${TAXBOT_ERROR_SCREENSHOT_PATH:-/artifacts/taxbot_last_error.png}
+    volumes:
+      - ./artifacts:/artifacts
     ports:
       - "8000:8000"
     depends_on:
