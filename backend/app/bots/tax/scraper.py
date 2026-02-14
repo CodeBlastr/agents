@@ -3,7 +3,7 @@ import hashlib
 import os
 import re
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
@@ -11,6 +11,7 @@ from playwright.async_api import async_playwright
 
 ERROR_SCREENSHOT_PATH = os.getenv("TAXBOT_ERROR_SCREENSHOT_PATH", "/artifacts/taxbot_last_error.png")
 DEFAULT_BALANCE_REGEX = r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)"
+MONEY_REGEX = re.compile(r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)")
 
 
 def _artifact_path(run_id: int | None, label: str) -> str:
@@ -29,18 +30,18 @@ def scrape_tax_data(
     run_id: int | None = None,
     event_callback=None,
 ) -> dict:
-    use_real = os.getenv("USE_REAL_SCRAPER", "0") == "1"
-    if use_real:
-        return asyncio.run(
-            scrape_tax_portal(
-                parcel_id,
-                portal_url,
-                portal_profile,
-                run_id=run_id,
-                event_callback=event_callback,
-            )
+    scraper_mode = (portal_profile.get("scraper_mode") or "real").strip().lower()
+    if scraper_mode == "stub":
+        return _scrape_stub(parcel_id, portal_url)
+    return asyncio.run(
+        scrape_tax_portal(
+            parcel_id,
+            portal_url,
+            portal_profile,
+            run_id=run_id,
+            event_callback=event_callback,
         )
-    return _scrape_stub(parcel_id, portal_url)
+    )
 
 
 def _scrape_stub(parcel_id: str, portal_url: str) -> dict:
@@ -63,6 +64,7 @@ def _scrape_stub(parcel_id: str, portal_url: str) -> dict:
             "note": "Deterministic fake data based on parcel_id",
             "parcel_id": parcel_id,
             "portal_url": portal_url,
+            "property_details": [],
         },
     }
 
@@ -149,6 +151,175 @@ async def _checkpoint_proof(page, checkpoint_selector: str | None, checkpoint_mi
     }
 
 
+def _to_decimal(text: str) -> Decimal | None:
+    if not text:
+        return None
+    match = MONEY_REGEX.search(text)
+    if not match:
+        return None
+    cleaned = re.sub(r"[^0-9.]", "", match.group(1))
+    if not cleaned:
+        return None
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return None
+
+
+async def _extract_table_data(page, table_selector: str) -> list[dict]:
+    table_count = await page.locator(table_selector).count()
+    tables: list[dict] = []
+    for table_idx in range(table_count):
+        table = page.locator(table_selector).nth(table_idx)
+        heading = ""
+
+        rows = table.locator("tr")
+        row_count = await rows.count()
+        row_data: list[list[str]] = []
+        for row_idx in range(row_count):
+            row = rows.nth(row_idx)
+            cells = row.locator("th, td")
+            cell_count = await cells.count()
+            values = []
+            for cell_idx in range(cell_count):
+                text = (await cells.nth(cell_idx).inner_text()).strip()
+                values.append(re.sub(r"\s+", " ", text))
+            if values:
+                row_data.append(values)
+
+        if row_data:
+            tables.append({"heading": heading, "rows": row_data})
+    return tables
+
+
+def _derive_total_due(tables: list[dict]) -> Decimal:
+    totals: list[Decimal] = []
+    for table in tables:
+        for row in table.get("rows", []):
+            if not row:
+                continue
+            first = row[0].strip().upper()
+            if first == "TOTAL":
+                for cell in reversed(row):
+                    money = _to_decimal(cell)
+                    if money is not None:
+                        totals.append(money)
+                        break
+
+    if totals:
+        return sum(totals, Decimal("0.00"))
+
+    fallback: Decimal | None = None
+    for table in tables:
+        for row in table.get("rows", []):
+            for cell in row:
+                money = _to_decimal(cell)
+                if money is not None and (fallback is None or money > fallback):
+                    fallback = money
+    return fallback if fallback is not None else Decimal("0.00")
+
+
+def _extract_property_identity(tables: list[dict]) -> tuple[str | None, str | None, str | None]:
+    property_number = None
+    tax_map = None
+    property_address = None
+    for table in tables:
+        rows = table.get("rows", [])
+        if len(rows) < 2:
+            continue
+        headers = [c.strip().lower() for c in rows[0]]
+        values = rows[1]
+        for idx, header in enumerate(headers):
+            value = values[idx] if idx < len(values) else None
+            if value is None:
+                continue
+            if "property number" in header:
+                property_number = value
+            elif "tax map" in header:
+                tax_map = value
+            elif "property address" in header:
+                property_address = value
+    return property_number, tax_map, property_address
+
+
+async def _scrape_multi_property_tax_data(
+    page,
+    run_id: int | None,
+    artifacts: list[dict],
+    event_callback,
+    row_selector: str,
+    first_link_selector: str,
+    detail_table_selector: str,
+    max_properties: int,
+) -> tuple[list[dict], Decimal]:
+    await page.locator(row_selector).first.wait_for(timeout=15000)
+    details: list[dict] = []
+    aggregate_total = Decimal("0.00")
+    processed = 0
+    row_index = 0
+
+    while processed < max_properties:
+        rows = page.locator(row_selector)
+        row_count = await rows.count()
+        if row_index >= row_count:
+            break
+
+        row = rows.nth(row_index)
+        link = row.locator(first_link_selector).first
+        if await link.count() == 0:
+            row_index += 1
+            continue
+
+        link_text = (await link.inner_text()).strip()
+        await link.click()
+        await page.wait_for_load_state("networkidle")
+
+        await _capture_artifact(page, run_id, f"property_{processed + 1}_detail", artifacts, event_callback)
+
+        tables = await _extract_table_data(page, detail_table_selector)
+        total_due = _derive_total_due(tables)
+        property_number, tax_map, property_address = _extract_property_identity(tables)
+        if not property_address:
+            property_address = link_text
+
+        property_detail = {
+            "row_index": row_index,
+            "property_number": property_number,
+            "tax_map": tax_map,
+            "property_address": property_address,
+            "total_due": str(total_due),
+            "tables": tables,
+            "detail_url": page.url,
+        }
+        details.append(property_detail)
+        aggregate_total += total_due
+
+        if event_callback:
+            event_callback(
+                {
+                    "type": "property_scraped",
+                    "property_index": processed + 1,
+                    "property_address": property_address,
+                    "total_due": str(total_due),
+                    "property_number": property_number,
+                    "tax_map": tax_map,
+                }
+            )
+
+        processed += 1
+
+        back_button = page.get_by_text("Back to Results", exact=False).first
+        if await back_button.count() > 0:
+            await back_button.click()
+            await page.wait_for_load_state("networkidle")
+        else:
+            await page.go_back(wait_until="networkidle")
+        await _capture_artifact(page, run_id, f"property_{processed}_back_to_results", artifacts, event_callback)
+        row_index += 1
+
+    return details, aggregate_total
+
+
 async def scrape_tax_portal(
     parcel_id: str,
     portal_url: str,
@@ -164,6 +335,11 @@ async def scrape_tax_portal(
     checkpoint_selector = portal_profile.get("checkpoint_selector")
     checkpoint_min_count = portal_profile.get("checkpoint_min_count")
     stop_after_checkpoint = bool(portal_profile.get("stop_after_checkpoint"))
+
+    row_selector = portal_profile.get("results_row_selector") or "table tr"
+    first_link_selector = portal_profile.get("row_first_link_selector") or "td:first-child a"
+    detail_table_selector = portal_profile.get("detail_table_selector") or "table"
+    max_properties = int(portal_profile.get("max_properties") or 3)
 
     page = None
     artifacts: list[dict] = []
@@ -199,6 +375,7 @@ async def scrape_tax_portal(
                         "portal_url": portal_url,
                         "parcel_id": parcel_id,
                         "note": "Stopped after checkpoint by configuration",
+                        "property_details": [],
                         "artifacts": {
                             "checkpoint_screenshot": success_path,
                             "screenshots": artifacts,
@@ -207,64 +384,43 @@ async def scrape_tax_portal(
                     },
                 }
 
-            parcel_locator = None
             if parcel_selector:
                 candidate = page.locator(parcel_selector).first
                 if await candidate.count() > 0:
-                    parcel_locator = candidate
-            else:
-                heuristics = [
-                    'input[id*="parcel" i]',
-                    'input[name*="parcel" i]',
-                    'input[placeholder*="parcel" i]',
-                    'input[id*="property" i]',
-                    'input[name*="property" i]',
-                ]
-                for selector in heuristics:
-                    candidate = page.locator(selector).first
-                    if await candidate.count() > 0:
-                        parcel_locator = candidate
-                        break
+                    await candidate.fill(parcel_id)
 
-            if parcel_locator is None:
-                raise RuntimeError("Could not find parcel input field")
-
-            await parcel_locator.fill(parcel_id)
-
-            clicked = False
             if search_selector:
                 button = page.locator(search_selector).first
                 if await button.count() > 0:
                     await button.click()
-                    clicked = True
                     await _capture_artifact(page, run_id, "after_search_click", artifacts, event_callback)
-            if not clicked:
-                for selector in ['button:has-text("Search")', 'button:has-text("Submit")', 'input[type="submit"]']:
-                    button = page.locator(selector).first
-                    if await button.count() > 0:
-                        await button.click()
-                        clicked = True
-                        await _capture_artifact(page, run_id, "after_search_click", artifacts, event_callback)
-                        break
-            if not clicked:
-                raise RuntimeError("Could not find search/submit button")
+                    if results_selector:
+                        await page.locator(results_selector).first.wait_for(timeout=10000)
 
-            if results_selector:
-                await page.locator(results_selector).first.wait_for(timeout=10000)
+            property_details, aggregate_total = await _scrape_multi_property_tax_data(
+                page,
+                run_id,
+                artifacts,
+                event_callback,
+                row_selector,
+                first_link_selector,
+                detail_table_selector,
+                max_properties,
+            )
+
+            if not property_details:
+                body_text = await page.inner_text("body")
+                sample = body_text[:500]
+                match = re.search(balance_regex, body_text)
+                if not match:
+                    raise RuntimeError(f"Could not extract properties or balance using regex: {balance_regex}")
+                money = match.group(1) if match.groups() else match.group(0)
+                cleaned = re.sub(r"[^0-9.]", "", money)
+                aggregate_total = Decimal(cleaned)
+                property_details = []
+                extracted_text_sample = sample
             else:
-                await page.wait_for_timeout(1000)
-            await _capture_artifact(page, run_id, "after_results", artifacts, event_callback)
-
-            body_text = await page.inner_text("body")
-            sample = body_text[:500]
-            match = re.search(balance_regex, body_text)
-            if not match:
-                raise RuntimeError(f"Could not extract balance using regex: {balance_regex}")
-
-            money = match.group(1) if match.groups() else match.group(0)
-            cleaned = re.sub(r"[^0-9.]", "", money)
-            if not cleaned:
-                raise RuntimeError("Extracted money value was empty after cleaning")
+                extracted_text_sample = ""
 
             success_path = _artifact_path(run_id, "success")
             await page.screenshot(path=success_path, full_page=True)
@@ -275,18 +431,19 @@ async def scrape_tax_portal(
             await browser.close()
             return {
                 "mode": "real",
-                "run_type": "full_extract",
+                "run_type": "multi_property_extract" if property_details else "full_extract",
                 "parcel_id": parcel_id,
                 "portal_url": portal_url,
-                "balance_due": Decimal(cleaned),
+                "balance_due": aggregate_total,
                 "paid_status": None,
                 "due_date": None,
                 "raw_json": {
                     "mode": "real",
                     "portal_url": portal_url,
                     "parcel_id": parcel_id,
-                    "extracted_text_sample": sample,
+                    "extracted_text_sample": extracted_text_sample,
                     "regex_used": balance_regex,
+                    "property_details": property_details,
                     "artifacts": {
                         "result_screenshot": success_path,
                         "screenshots": artifacts,

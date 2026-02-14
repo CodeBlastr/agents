@@ -63,7 +63,8 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   padding: 8px;
   border-radius: 6px;
   border: 1px solid #d1d5db;
@@ -133,4 +134,28 @@ textarea {
   .run-top-grid {
     grid-template-columns: 1fr;
   }
+}
+
+
+.property-table-wrap {
+  margin-top: 12px;
+  border-top: 1px solid #e5e7eb;
+  padding-top: 8px;
+}
+
+.property-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.property-table th,
+.property-table td {
+  border: 1px solid #d1d5db;
+  padding: 6px;
+  text-align: left;
+}
+
+.property-table th {
+  background: #f1f5f9;
 }

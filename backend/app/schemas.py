@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
@@ -19,6 +20,15 @@ class BotSummary(BaseModel):
         from_attributes = True
 
 
+class TaxPropertyDetailItem(BaseModel):
+    id: int | None = None
+    property_number: str | None = None
+    tax_map: str | None = None
+    property_address: str
+    total_due: Decimal
+    detail_json: dict = Field(default_factory=dict)
+
+
 class TaxRunResult(BaseModel):
     bot_slug: str
     status: str
@@ -31,6 +41,7 @@ class TaxRunResult(BaseModel):
     current_balance_due: Decimal | None = None
     previous_balance_due: Decimal | None = None
     details: dict = Field(default_factory=dict)
+    property_details: list[TaxPropertyDetailItem] = Field(default_factory=list)
 
 
 class TaxRunDetails(BaseModel):
@@ -45,6 +56,7 @@ class TaxRunDetails(BaseModel):
     current_balance_due: Decimal | None = None
     previous_balance_due: Decimal | None = None
     details: dict = Field(default_factory=dict)
+    property_details: list[TaxPropertyDetailItem] = Field(default_factory=list)
 
 
 class PortalProfile(BaseModel):
@@ -56,6 +68,11 @@ class PortalProfile(BaseModel):
     checkpoint_selector: str | None = None
     checkpoint_min_count: int | None = None
     stop_after_checkpoint: bool = False
+    scraper_mode: Literal["real", "stub"] = "real"
+    results_row_selector: str | None = None
+    row_first_link_selector: str | None = None
+    detail_table_selector: str | None = None
+    max_properties: int | None = 3
 
 
 class TaxConfig(BaseModel):
