@@ -19,6 +19,7 @@ const EMPTY_CONFIG = {
     row_first_link_selector: 'td:first-child a',
     detail_table_selector: 'table',
     max_properties: '3',
+    direct_property_urls_text: '',
   },
 }
 
@@ -106,6 +107,9 @@ export default function App() {
         row_first_link_selector: data.portal_profile?.row_first_link_selector || 'td:first-child a',
         detail_table_selector: data.portal_profile?.detail_table_selector || 'table',
         max_properties: data.portal_profile?.max_properties?.toString() || '3',
+        direct_property_urls_text: Array.isArray(data.portal_profile?.direct_property_urls)
+          ? data.portal_profile.direct_property_urls.join('\n')
+          : '',
       },
     }
     setConfig(normalized)
@@ -275,6 +279,10 @@ export default function App() {
           row_first_link_selector: config.portal_profile.row_first_link_selector || 'td:first-child a',
           detail_table_selector: config.portal_profile.detail_table_selector || 'table',
           max_properties: config.portal_profile.max_properties ? Number(config.portal_profile.max_properties) : 3,
+          direct_property_urls: (config.portal_profile.direct_property_urls_text || '')
+            .split('\n')
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0),
         },
       }
       const res = await fetch(`${API_BASE}/api/bots/tax/config`, {
@@ -399,6 +407,14 @@ export default function App() {
                     <label>
                       Max Properties
                       <input type="number" min="1" value={config.portal_profile.max_properties} onChange={(e) => updateProfile('max_properties', e.target.value)} />
+                    </label>
+                    <label>
+                      Direct Property URLs (one per line, optional)
+                      <textarea
+                        rows={4}
+                        value={config.portal_profile.direct_property_urls_text}
+                        onChange={(e) => updateProfile('direct_property_urls_text', e.target.value)}
+                      />
                     </label>
                     <label>
                       Parcel Selector (optional)
