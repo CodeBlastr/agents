@@ -23,6 +23,7 @@ DEFAULT_TAX_CONFIG = {
         "row_first_link_selector": "td:nth-child(1) a",
         "detail_table_selector": "table",
         "max_properties": 0,
+        "direct_property_urls": [],
     },
 }
 

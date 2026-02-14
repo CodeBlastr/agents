@@ -244,6 +244,98 @@ def _extract_property_identity(tables: list[dict]) -> tuple[str | None, str | No
     return property_number, tax_map, property_address
 
 
+def _derive_address_from_url(url: str) -> str:
+    match = re.search(r"[?&]number=([^&#]+)", url)
+    if match:
+        return f"Property {match.group(1)}"
+    return url
+
+
+async def _scrape_direct_property_urls(
+    page,
+    run_id: int | None,
+    artifacts: list[dict],
+    event_callback,
+    direct_property_urls: list[str],
+    detail_table_selector: str,
+    max_properties: int,
+) -> tuple[list[dict], Decimal]:
+    details: list[dict] = []
+    aggregate_total = Decimal("0.00")
+
+    for idx, url in enumerate(direct_property_urls, start=1):
+        if max_properties > 0 and len(details) >= max_properties:
+            break
+
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=30000)
+        except Exception as exc:
+            await _capture_artifact(page, run_id, f"direct_property_{idx}_goto_error", artifacts, event_callback)
+            if event_callback:
+                event_callback(
+                    {
+                        "type": "property_row_skipped",
+                        "row_index": idx - 1,
+                        "property_index": idx,
+                        "reason": f"failed loading direct url: {exc}",
+                        "property_label": url,
+                    }
+                )
+            continue
+
+        if detail_table_selector.strip() and detail_table_selector.strip() not in {"*"}:
+            try:
+                await page.locator(detail_table_selector).first.wait_for(timeout=15000)
+            except PlaywrightTimeoutError:
+                await _capture_artifact(page, run_id, f"direct_property_{idx}_detail_wait_timeout", artifacts, event_callback)
+                if event_callback:
+                    event_callback(
+                        {
+                            "type": "property_row_skipped",
+                            "row_index": idx - 1,
+                            "property_index": idx,
+                            "reason": f"detail selector did not appear: {detail_table_selector}",
+                            "property_label": url,
+                        }
+                    )
+                continue
+
+        await _capture_artifact(page, run_id, f"direct_property_{idx}_detail", artifacts, event_callback)
+
+        tables = await _extract_table_data(page, detail_table_selector)
+        total_due = _derive_total_due(tables)
+        property_number, tax_map, property_address = _extract_property_identity(tables)
+        if not property_address:
+            property_address = _derive_address_from_url(url)
+
+        detail = {
+            "row_index": idx - 1,
+            "property_number": property_number,
+            "tax_map": tax_map,
+            "property_address": property_address,
+            "total_due": str(total_due),
+            "tables": tables,
+            "detail_url": page.url,
+            "source_url": url,
+        }
+        details.append(detail)
+        aggregate_total += total_due
+
+        if event_callback:
+            event_callback(
+                {
+                    "type": "property_scraped",
+                    "property_index": idx,
+                    "property_address": property_address,
+                    "total_due": str(total_due),
+                    "property_number": property_number,
+                    "tax_map": tax_map,
+                }
+            )
+
+    return details, aggregate_total
+
+
 async def _wait_for_detail_page_transition(page, previous_url: str, timeout_ms: int = 15000):
     await page.wait_for_load_state("domcontentloaded")
     await page.wait_for_function(
@@ -456,6 +548,7 @@ async def scrape_tax_portal(
     detail_table_selector = portal_profile.get("detail_table_selector") or "table"
     raw_max_properties = portal_profile.get("max_properties")
     max_properties = int(raw_max_properties) if raw_max_properties is not None else 0
+    direct_property_urls = [str(item).strip() for item in (portal_profile.get("direct_property_urls") or []) if str(item).strip()]
 
     page = None
     artifacts: list[dict] = []
@@ -513,17 +606,28 @@ async def scrape_tax_portal(
                     if results_selector:
                         await page.locator(results_selector).first.wait_for(timeout=10000)
 
-            property_details, aggregate_total = await _scrape_multi_property_tax_data(
-                page,
-                run_id,
-                artifacts,
-                event_callback,
-                row_selector,
-                first_link_selector,
-                detail_table_selector,
-                results_selector,
-                max_properties,
-            )
+            if direct_property_urls:
+                property_details, aggregate_total = await _scrape_direct_property_urls(
+                    page,
+                    run_id,
+                    artifacts,
+                    event_callback,
+                    direct_property_urls,
+                    detail_table_selector,
+                    max_properties,
+                )
+            else:
+                property_details, aggregate_total = await _scrape_multi_property_tax_data(
+                    page,
+                    run_id,
+                    artifacts,
+                    event_callback,
+                    row_selector,
+                    first_link_selector,
+                    detail_table_selector,
+                    results_selector,
+                    max_properties,
+                )
 
             if not property_details:
                 body_text = await page.inner_text("body")

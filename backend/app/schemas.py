@@ -73,6 +73,7 @@ class PortalProfile(BaseModel):
     row_first_link_selector: str | None = None
     detail_table_selector: str | None = None
     max_properties: int | None = 0
+    direct_property_urls: list[HttpUrl] = Field(default_factory=list)
 
 
 class TaxConfig(BaseModel):
