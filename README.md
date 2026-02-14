@@ -70,3 +70,28 @@ When using Docker, migrations are also applied automatically at backend start vi
 - `GET /api/notifications?bot=tax&limit=20`
 
 The backend seeds `Tax Bot v0` (`slug=tax`) on startup if missing and ensures default config at key `tax.default`.
+
+## Syracuse direct page scraper
+
+For one-off scraping of direct Syracuse account pages (including the three provided account URLs), use:
+
+```bash
+python backend/app/bots/tax/syracuse_scraper.py
+```
+
+This prints JSON with one record per page including:
+
+- `account_number`
+- `as_of_date`
+- `tax_information_available`
+- `tax_status_message`
+
+You can also pass custom URLs and save output:
+
+```bash
+python backend/app/bots/tax/syracuse_scraper.py \
+  'https://syracuse.go2gov.net/faces/accounts?number=0562001300&src=SDG' \
+  'https://syracuse.go2gov.net/faces/accounts?number=1626103200&src=SDG' \
+  'https://syracuse.go2gov.net/faces/accounts?number=0716100700&src=SDG' \
+  --output syracuse_tax_data.json
+```
