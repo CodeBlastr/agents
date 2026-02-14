@@ -2,7 +2,9 @@ import asyncio
 import hashlib
 import os
 import re
+from datetime import datetime, timezone
 from decimal import Decimal
+from pathlib import Path
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
@@ -11,10 +13,19 @@ ERROR_SCREENSHOT_PATH = os.getenv("TAXBOT_ERROR_SCREENSHOT_PATH", "/artifacts/ta
 DEFAULT_BALANCE_REGEX = r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)"
 
 
-def scrape_tax_data(parcel_id: str, portal_url: str, portal_profile: dict) -> dict:
+def _artifact_path(run_id: int | None, label: str) -> str:
+    base = Path(ERROR_SCREENSHOT_PATH)
+    stem = base.stem
+    suffix = base.suffix or ".png"
+    run_part = f"run_{run_id}" if run_id is not None else "run_unknown"
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return str(base.with_name(f"{stem}_{run_part}_{label}_{ts}{suffix}"))
+
+
+def scrape_tax_data(parcel_id: str, portal_url: str, portal_profile: dict, run_id: int | None = None) -> dict:
     use_real = os.getenv("USE_REAL_SCRAPER", "0") == "1"
     if use_real:
-        return asyncio.run(scrape_tax_portal(parcel_id, portal_url, portal_profile))
+        return asyncio.run(scrape_tax_portal(parcel_id, portal_url, portal_profile, run_id=run_id))
     return _scrape_stub(parcel_id, portal_url)
 
 
@@ -26,6 +37,8 @@ def _scrape_stub(parcel_id: str, portal_url: str) -> dict:
     due_day = (seed % 27) + 1
 
     return {
+        "mode": "stub",
+        "run_type": "full_extract",
         "parcel_id": parcel_id,
         "portal_url": portal_url,
         "balance_due": dollars.quantize(Decimal("0.01")),
@@ -111,7 +124,7 @@ async def _checkpoint_proof(page, checkpoint_selector: str | None, checkpoint_mi
     }
 
 
-async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dict) -> dict:
+async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dict, run_id: int | None = None) -> dict:
     parcel_selector = portal_profile.get("parcel_selector")
     search_selector = portal_profile.get("search_button_selector")
     results_selector = portal_profile.get("results_container_selector")
@@ -132,8 +145,12 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
             checkpoint = await _checkpoint_proof(page, checkpoint_selector, checkpoint_min_count)
 
             if stop_after_checkpoint:
+                success_path = _artifact_path(run_id, "checkpoint")
+                await page.screenshot(path=success_path, full_page=True)
                 await browser.close()
                 return {
+                    "mode": "real",
+                    "run_type": "checkpoint_only",
                     "parcel_id": parcel_id,
                     "portal_url": portal_url,
                     "balance_due": Decimal("0.00"),
@@ -144,6 +161,7 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                         "portal_url": portal_url,
                         "parcel_id": parcel_id,
                         "note": "Stopped after checkpoint by configuration",
+                        "artifacts": {"checkpoint_screenshot": success_path},
                         **checkpoint,
                     },
                 }
@@ -204,8 +222,13 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
             if not cleaned:
                 raise RuntimeError("Extracted money value was empty after cleaning")
 
+            success_path = _artifact_path(run_id, "success")
+            await page.screenshot(path=success_path, full_page=True)
+
             await browser.close()
             return {
+                "mode": "real",
+                "run_type": "full_extract",
                 "parcel_id": parcel_id,
                 "portal_url": portal_url,
                 "balance_due": Decimal(cleaned),
@@ -217,14 +240,16 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                     "parcel_id": parcel_id,
                     "extracted_text_sample": sample,
                     "regex_used": balance_regex,
+                    "artifacts": {"result_screenshot": success_path},
                     **checkpoint,
                 },
             }
     except (PlaywrightTimeoutError, Exception) as exc:
         excerpt = ""
+        error_path = _artifact_path(run_id, "error")
         if page is not None:
             try:
-                await page.screenshot(path=ERROR_SCREENSHOT_PATH, full_page=True)
+                await page.screenshot(path=error_path, full_page=True)
             except Exception:
                 pass
             try:
@@ -232,5 +257,5 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
             except Exception:
                 excerpt = ""
         raise RuntimeError(
-            f"Real scrape failed: {exc}. Screenshot: {ERROR_SCREENSHOT_PATH}. Text excerpt: {excerpt}"
+            f"Real scrape failed: {exc}. Screenshot: {error_path}. Text excerpt: {excerpt}"
         ) from exc

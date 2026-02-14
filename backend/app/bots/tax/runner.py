@@ -13,6 +13,7 @@ def run_tax_bot(db: Session, bot: Bot, config: dict) -> dict:
             parcel_id=config["parcel_id"],
             portal_url=config["portal_url"],
             portal_profile=config.get("portal_profile") or {},
+            run_id=run.id,
         )
         parsed = parse_tax_data(scraped)
 
@@ -49,8 +50,11 @@ def run_tax_bot(db: Session, bot: Bot, config: dict) -> dict:
             "snapshot_id": snapshot.id,
             "changed": changed,
             "message": "Tax bot completed",
+            "mode": scraped.get("mode") or "unknown",
+            "run_type": scraped.get("run_type") or "full_extract",
             "current_balance_due": snapshot.balance_due,
             "previous_balance_due": previous_balance,
+            "details": snapshot.raw_json,
         }
     except Exception as exc:
         crud.finalize_run(db, run, "error", str(exc))
@@ -61,6 +65,9 @@ def run_tax_bot(db: Session, bot: Bot, config: dict) -> dict:
             "snapshot_id": None,
             "changed": False,
             "message": str(exc),
+            "mode": "real" if "Real scrape failed:" in str(exc) else "unknown",
+            "run_type": "failed",
             "current_balance_due": None,
             "previous_balance_due": None,
+            "details": {"error": str(exc)},
         }
