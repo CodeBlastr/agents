@@ -33,19 +33,20 @@ function modeLabel(mode) {
   return mode.toUpperCase()
 }
 
-function toArtifactUrl(path) {
+function toArtifactUrl(path, cacheKey = '') {
   if (!path) return ''
+  const bust = cacheKey ? `?v=${encodeURIComponent(cacheKey)}` : ''
   if (path.startsWith('/artifacts/')) {
-    return `${API_BASE}/api/artifacts/${path.replace('/artifacts/', '')}`
+    return `${API_BASE}/api/artifacts/${path.replace('/artifacts/', '')}${bust}`
   }
-  return path
+  return `${path}${bust}`
 }
 
-function collectArtifactPaths(details) {
+function collectArtifactPaths(details, cacheKey = '') {
   const artifacts = details?.artifacts || {}
   const singles = Object.entries(artifacts)
     .filter(([key, value]) => key !== 'screenshots' && typeof value === 'string' && value.length > 0)
-    .map(([key, value]) => ({ key, path: value, url: toArtifactUrl(value) }))
+    .map(([key, value]) => ({ key, path: value, url: toArtifactUrl(value, cacheKey) }))
 
   const sequence = Array.isArray(artifacts.screenshots)
     ? artifacts.screenshots
@@ -53,7 +54,7 @@ function collectArtifactPaths(details) {
       .map((item, idx) => ({
         key: item.label || `step_${idx + 1}`,
         path: item.path,
-        url: toArtifactUrl(item.path),
+        url: toArtifactUrl(item.path, cacheKey),
       }))
     : []
 
@@ -163,7 +164,7 @@ export default function App() {
       return [...prev, {
         key: payload.label || `live_${prev.length + 1}`,
         path: payload.path,
-        url: toArtifactUrl(payload.path),
+        url: toArtifactUrl(payload.path, `${payload.run_id || 'live'}-${payload.timestamp || Date.now()}`),
       }]
     })
   }
@@ -255,7 +256,8 @@ export default function App() {
     setSavingConfig(true)
     setError('')
     try {
-      const parsedPreSteps = JSON.parse(preStepsJson || '[]')
+      const preStepsInput = (preStepsJson || '').trim()
+      const parsedPreSteps = preStepsInput ? JSON.parse(preStepsInput) : []
       if (!Array.isArray(parsedPreSteps)) {
         throw new Error('Pre-steps JSON must be an array')
       }
@@ -302,7 +304,7 @@ export default function App() {
     }
   }
 
-  const artifactItems = collectArtifactPaths(lastRunDetails?.details)
+  const artifactItems = collectArtifactPaths(lastRunDetails?.details, lastRunDetails?.run_id ? `run-${lastRunDetails.run_id}` : '')
   const streamItems = liveScreenshots.length > 0 ? liveScreenshots : artifactItems
 
   return (
