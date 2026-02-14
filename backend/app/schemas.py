@@ -72,7 +72,7 @@ class PortalProfile(BaseModel):
     results_row_selector: str | None = None
     row_first_link_selector: str | None = None
     detail_table_selector: str | None = None
-    max_properties: int | None = 3
+    max_properties: int | None = 0
 
 
 class TaxConfig(BaseModel):

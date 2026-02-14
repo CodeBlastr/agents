@@ -260,7 +260,7 @@ async def _scrape_multi_property_tax_data(
     processed = 0
     row_index = 0
 
-    while processed < max_properties:
+    while max_properties <= 0 or processed < max_properties:
         rows = page.locator(row_selector)
         row_count = await rows.count()
         if row_index >= row_count:
@@ -383,10 +383,11 @@ async def scrape_tax_portal(
     checkpoint_min_count = portal_profile.get("checkpoint_min_count")
     stop_after_checkpoint = bool(portal_profile.get("stop_after_checkpoint"))
 
-    row_selector = portal_profile.get("results_row_selector") or "table tr"
-    first_link_selector = portal_profile.get("row_first_link_selector") or "td:first-child a"
+    row_selector = portal_profile.get("results_row_selector") or "table tr:has(td)"
+    first_link_selector = portal_profile.get("row_first_link_selector") or "td a"
     detail_table_selector = portal_profile.get("detail_table_selector") or "table"
-    max_properties = int(portal_profile.get("max_properties") or 3)
+    raw_max_properties = portal_profile.get("max_properties")
+    max_properties = int(raw_max_properties) if raw_max_properties is not None else 0
 
     page = None
     artifacts: list[dict] = []
