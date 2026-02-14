@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urljoin
 
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
@@ -243,6 +244,61 @@ def _extract_property_identity(tables: list[dict]) -> tuple[str | None, str | No
     return property_number, tax_map, property_address
 
 
+async def _wait_for_detail_page_transition(page, previous_url: str, timeout_ms: int = 15000):
+    await page.wait_for_load_state("domcontentloaded")
+    await page.wait_for_function(
+        """([prevUrl]) => {
+            if (window.location.href !== prevUrl) return true;
+            const backToResults = Array.from(document.querySelectorAll('a, button, input[type=button], input[type=submit]'))
+                .some((el) => /back\\s+to\\s+results/i.test((el.innerText || el.value || '').trim()));
+            return backToResults;
+        }""",
+        [previous_url],
+        timeout=timeout_ms,
+    )
+
+
+async def _open_property_detail(page, link, detail_table_selector: str):
+    previous_url = page.url
+    await link.click()
+
+    try:
+        await _wait_for_detail_page_transition(page, previous_url)
+        return
+    except PlaywrightTimeoutError:
+        href = await link.get_attribute("href")
+        if href and not href.strip().lower().startswith("javascript"):
+            await page.goto(urljoin(previous_url, href), wait_until="domcontentloaded", timeout=30000)
+            await _wait_for_detail_page_transition(page, previous_url)
+            return
+
+        if detail_table_selector.strip() and detail_table_selector.strip() not in {"table", "*"}:
+            await page.locator(detail_table_selector).first.wait_for(timeout=15000)
+            return
+
+        raise
+
+
+async def _resolve_results_locators(page, row_selector: str, first_link_selector: str) -> tuple[str, str]:
+    candidates = [
+        (row_selector, first_link_selector),
+        ("#tblList > tbody > tr", "td:nth-child(1) a"),
+        ("#tblList tbody tr", "td:nth-child(1) a"),
+        ("#tblList tbody tr", "td a"),
+        ("table tbody tr", "td:nth-child(1) a"),
+    ]
+
+    for cand_row_selector, cand_link_selector in candidates:
+        rows = page.locator(cand_row_selector)
+        if await rows.count() == 0:
+            continue
+        first_row = rows.first
+        if await first_row.locator(cand_link_selector).count() > 0:
+            return cand_row_selector, cand_link_selector
+
+    return row_selector, first_link_selector
+
+
 async def _scrape_multi_property_tax_data(
     page,
     run_id: int | None,
@@ -254,13 +310,26 @@ async def _scrape_multi_property_tax_data(
     results_selector: str | None,
     max_properties: int,
 ) -> tuple[list[dict], Decimal]:
+    requested_row_selector = row_selector
+    requested_link_selector = first_link_selector
+    row_selector, first_link_selector = await _resolve_results_locators(page, row_selector, first_link_selector)
+    if event_callback and (row_selector != requested_row_selector or first_link_selector != requested_link_selector):
+        event_callback(
+            {
+                "type": "results_locator_resolved",
+                "requested_row_selector": requested_row_selector,
+                "requested_link_selector": requested_link_selector,
+                "row_selector": row_selector,
+                "link_selector": first_link_selector,
+            }
+        )
     await page.locator(row_selector).first.wait_for(timeout=15000)
     details: list[dict] = []
     aggregate_total = Decimal("0.00")
     processed = 0
     row_index = 0
 
-    while processed < max_properties:
+    while max_properties <= 0 or processed < max_properties:
         rows = page.locator(row_selector)
         row_count = await rows.count()
         if row_index >= row_count:
@@ -274,8 +343,7 @@ async def _scrape_multi_property_tax_data(
 
         link_text = (await link.inner_text()).strip()
         try:
-            await link.click()
-            await page.locator(detail_table_selector).first.wait_for(timeout=15000)
+            await _open_property_detail(page, link, detail_table_selector)
         except PlaywrightTimeoutError:
             await _capture_artifact(
                 page,
@@ -383,10 +451,11 @@ async def scrape_tax_portal(
     checkpoint_min_count = portal_profile.get("checkpoint_min_count")
     stop_after_checkpoint = bool(portal_profile.get("stop_after_checkpoint"))
 
-    row_selector = portal_profile.get("results_row_selector") or "table tr"
-    first_link_selector = portal_profile.get("row_first_link_selector") or "td:first-child a"
+    row_selector = portal_profile.get("results_row_selector") or "#tblList > tbody > tr"
+    first_link_selector = portal_profile.get("row_first_link_selector") or "td:nth-child(1) a"
     detail_table_selector = portal_profile.get("detail_table_selector") or "table"
-    max_properties = int(portal_profile.get("max_properties") or 3)
+    raw_max_properties = portal_profile.get("max_properties")
+    max_properties = int(raw_max_properties) if raw_max_properties is not None else 0
 
     page = None
     artifacts: list[dict] = []
