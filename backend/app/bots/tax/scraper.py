@@ -9,13 +9,14 @@ from pathlib import Path
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
+ARTIFACT_PATH = os.getenv("TAXBOT_ARTIFACT_PATH", "/artifacts/taxbot_run.png")
 ERROR_SCREENSHOT_PATH = os.getenv("TAXBOT_ERROR_SCREENSHOT_PATH", "/artifacts/taxbot_last_error.png")
 DEFAULT_BALANCE_REGEX = r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)"
 MONEY_REGEX = re.compile(r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)")
 
 
-def _artifact_path(run_id: int | None, label: str) -> str:
-    base = Path(ERROR_SCREENSHOT_PATH)
+def _artifact_path(run_id: int | None, label: str, base_path: str = ARTIFACT_PATH) -> str:
+    base = Path(base_path)
     stem = base.stem
     suffix = base.suffix or ".png"
     run_part = f"run_{run_id}" if run_id is not None else "run_unknown"
@@ -80,7 +81,7 @@ async def _get_locator(page, step: dict):
 
 
 async def _capture_artifact(page, run_id: int | None, label: str, artifacts: list[dict], event_callback=None) -> str:
-    path = _artifact_path(run_id, label)
+    path = _artifact_path(run_id, label, ARTIFACT_PATH)
     await page.screenshot(path=path, full_page=True)
     entry = {"label": label, "path": path, "url": page.url}
     artifacts.append(entry)
@@ -250,6 +251,7 @@ async def _scrape_multi_property_tax_data(
     row_selector: str,
     first_link_selector: str,
     detail_table_selector: str,
+    results_selector: str | None,
     max_properties: int,
 ) -> tuple[list[dict], Decimal]:
     await page.locator(row_selector).first.wait_for(timeout=15000)
@@ -271,8 +273,49 @@ async def _scrape_multi_property_tax_data(
             continue
 
         link_text = (await link.inner_text()).strip()
-        await link.click()
-        await page.wait_for_load_state("networkidle")
+        try:
+            await link.click()
+            await page.locator(detail_table_selector).first.wait_for(timeout=15000)
+        except PlaywrightTimeoutError:
+            await _capture_artifact(
+                page,
+                run_id,
+                f"property_{processed + 1}_detail_wait_timeout",
+                artifacts,
+                event_callback,
+            )
+            if event_callback:
+                event_callback(
+                    {
+                        "type": "property_row_skipped",
+                        "row_index": row_index,
+                        "property_index": processed + 1,
+                        "reason": f"detail selector did not appear: {detail_table_selector}",
+                        "property_label": link_text,
+                    }
+                )
+            row_index += 1
+            continue
+        except Exception as exc:
+            await _capture_artifact(
+                page,
+                run_id,
+                f"property_{processed + 1}_detail_click_error",
+                artifacts,
+                event_callback,
+            )
+            if event_callback:
+                event_callback(
+                    {
+                        "type": "property_row_skipped",
+                        "row_index": row_index,
+                        "property_index": processed + 1,
+                        "reason": f"failed opening detail page: {exc}",
+                        "property_label": link_text,
+                    }
+                )
+            row_index += 1
+            continue
 
         await _capture_artifact(page, run_id, f"property_{processed + 1}_detail", artifacts, event_callback)
 
@@ -311,9 +354,13 @@ async def _scrape_multi_property_tax_data(
         back_button = page.get_by_text("Back to Results", exact=False).first
         if await back_button.count() > 0:
             await back_button.click()
-            await page.wait_for_load_state("networkidle")
         else:
-            await page.go_back(wait_until="networkidle")
+            await page.go_back(wait_until="domcontentloaded")
+
+        if results_selector:
+            await page.locator(results_selector).first.wait_for(timeout=15000)
+        else:
+            await page.locator(row_selector).first.wait_for(timeout=15000)
         await _capture_artifact(page, run_id, f"property_{processed}_back_to_results", artifacts, event_callback)
         row_index += 1
 
@@ -358,7 +405,7 @@ async def scrape_tax_portal(
                 await _capture_artifact(page, run_id, "checkpoint", artifacts, event_callback)
 
             if stop_after_checkpoint:
-                success_path = _artifact_path(run_id, "checkpoint")
+                success_path = _artifact_path(run_id, "checkpoint", ARTIFACT_PATH)
                 await page.screenshot(path=success_path, full_page=True)
                 artifacts.append({"label": "checkpoint_final", "path": success_path, "url": page.url})
                 await browser.close()
@@ -405,6 +452,7 @@ async def scrape_tax_portal(
                 row_selector,
                 first_link_selector,
                 detail_table_selector,
+                results_selector,
                 max_properties,
             )
 
@@ -422,7 +470,7 @@ async def scrape_tax_portal(
             else:
                 extracted_text_sample = ""
 
-            success_path = _artifact_path(run_id, "success")
+            success_path = _artifact_path(run_id, "success", ARTIFACT_PATH)
             await page.screenshot(path=success_path, full_page=True)
             artifacts.append({"label": "success", "path": success_path, "url": page.url})
             if event_callback:
@@ -453,7 +501,7 @@ async def scrape_tax_portal(
             }
     except (PlaywrightTimeoutError, Exception) as exc:
         excerpt = ""
-        error_path = _artifact_path(run_id, "error")
+        error_path = _artifact_path(run_id, "error", ERROR_SCREENSHOT_PATH)
         if page is not None:
             try:
                 await page.screenshot(path=error_path, full_page=True)
