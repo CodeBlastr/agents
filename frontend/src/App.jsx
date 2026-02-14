@@ -221,6 +221,10 @@ export default function App() {
   }
 
   const runTaxBot = async () => {
+    if (savingConfig) {
+      setError('Please wait for Save to finish before running.')
+      return
+    }
     setRunning(true)
     setError('')
     setLiveScreenshots([])
@@ -297,6 +301,7 @@ export default function App() {
         throw new Error(body.detail || 'Save failed')
       }
       await loadConfig()
+      setError('')
     } catch (e) {
       setError(`Save failed: ${e.message}`)
     } finally {
@@ -367,8 +372,8 @@ export default function App() {
                   </div>
                 </div>
 
-                <button onClick={runTaxBot} disabled={running}>
-                  {running ? 'Running...' : 'Run Now'}
+                <button onClick={runTaxBot} disabled={running || savingConfig}>
+                  {running ? 'Running...' : (savingConfig ? 'Save in progress...' : 'Run Now')}
                 </button>
 
                 <div className="config-header">
