@@ -1,7 +1,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 
 
 class BotSummary(BaseModel):
@@ -33,6 +33,9 @@ class PortalProfile(BaseModel):
     search_button_selector: str | None = None
     results_container_selector: str | None = None
     balance_regex: str | None = None
+    pre_steps: list[dict] = Field(default_factory=list)
+    checkpoint_selector: str | None = None
+    checkpoint_min_count: int | None = None
 
 
 class TaxConfig(BaseModel):

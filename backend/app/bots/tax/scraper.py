@@ -40,11 +40,88 @@ def _scrape_stub(parcel_id: str, portal_url: str) -> dict:
     }
 
 
+async def _click_action(page, action: dict) -> None:
+    selector = action.get("selector")
+    text = action.get("text")
+    if selector:
+        await page.locator(selector).first.click()
+        return
+    if text:
+        await page.get_by_text(text, exact=bool(action.get("exact", False))).first.click()
+        return
+    raise RuntimeError("pre_steps click action requires either selector or text")
+
+
+async def _check_action(page, action: dict) -> None:
+    selector = action.get("selector")
+    if not selector:
+        raise RuntimeError("pre_steps check action requires selector")
+    await page.locator(selector).first.check()
+
+
+async def _wait_for_url_action(page, action: dict) -> None:
+    url = action.get("url")
+    pattern = action.get("pattern")
+    timeout = int(action.get("timeout", 10000))
+    if url:
+        await page.wait_for_url(url, timeout=timeout)
+        return
+    if pattern:
+        await page.wait_for_url(re.compile(pattern), timeout=timeout)
+        return
+    raise RuntimeError("pre_steps wait_for_url action requires url or pattern")
+
+
+async def _wait_for_selector_action(page, action: dict) -> None:
+    selector = action.get("selector")
+    if not selector:
+        raise RuntimeError("pre_steps wait_for_selector action requires selector")
+    timeout = int(action.get("timeout", 10000))
+    await page.locator(selector).first.wait_for(timeout=timeout)
+
+
+async def _execute_pre_steps(page, pre_steps: list[dict]) -> None:
+    for idx, action in enumerate(pre_steps):
+        if not isinstance(action, dict):
+            raise RuntimeError(f"pre_steps[{idx}] must be an object")
+        action_type = action.get("type")
+        if action_type == "click":
+            await _click_action(page, action)
+        elif action_type == "check":
+            await _check_action(page, action)
+        elif action_type == "wait_for_url":
+            await _wait_for_url_action(page, action)
+        elif action_type == "wait_for_selector":
+            await _wait_for_selector_action(page, action)
+        else:
+            raise RuntimeError(f"Unsupported pre_steps action type: {action_type}")
+
+
+async def _build_checkpoint_evidence(page, checkpoint_selector: str | None) -> dict:
+    evidence = {
+        "current_url": page.url,
+        "checkpoint_selector": checkpoint_selector,
+        "matched_count": None,
+        "text_sample": "",
+    }
+    if checkpoint_selector:
+        locator = page.locator(checkpoint_selector)
+        evidence["matched_count"] = await locator.count()
+        try:
+            evidence["text_sample"] = (await locator.first.inner_text())[:300]
+        except Exception:
+            evidence["text_sample"] = ""
+    return evidence
+
+
 async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dict) -> dict:
     parcel_selector = portal_profile.get("parcel_selector")
     search_selector = portal_profile.get("search_button_selector")
     results_selector = portal_profile.get("results_container_selector")
     balance_regex = portal_profile.get("balance_regex") or DEFAULT_BALANCE_REGEX
+    pre_steps = portal_profile.get("pre_steps") or []
+    checkpoint_selector = portal_profile.get("checkpoint_selector")
+    checkpoint_min_count = portal_profile.get("checkpoint_min_count")
 
     page = None
     try:
@@ -53,56 +130,78 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
             page = await browser.new_page()
             await page.goto(portal_url, wait_until="networkidle", timeout=20000)
 
-            parcel_locator = None
-            if parcel_selector:
-                candidate = page.locator(parcel_selector).first
-                if await candidate.count() > 0:
-                    parcel_locator = candidate
+            if pre_steps:
+                await _execute_pre_steps(page, pre_steps)
+
+            checkpoint_evidence = await _build_checkpoint_evidence(page, checkpoint_selector)
+            if checkpoint_selector:
+                matched_count = checkpoint_evidence["matched_count"] or 0
+                if matched_count < 1:
+                    raise RuntimeError(
+                        f"Reached page but checkpoint selector not found: {checkpoint_selector}"
+                    )
+                if checkpoint_min_count is not None and matched_count < checkpoint_min_count:
+                    raise RuntimeError(
+                        f"Reached page but expected {checkpoint_min_count} properties, found {matched_count}"
+                    )
+
+            if pre_steps:
+                body_text = await page.inner_text("body")
+                sample = body_text[:500]
+                match = re.search(balance_regex, body_text)
+                if not match:
+                    raise RuntimeError(f"Could not extract balance using regex: {balance_regex}")
             else:
-                heuristics = [
-                    'input[id*="parcel" i]',
-                    'input[name*="parcel" i]',
-                    'input[placeholder*="parcel" i]',
-                    'input[id*="property" i]',
-                    'input[name*="property" i]',
-                ]
-                for selector in heuristics:
-                    candidate = page.locator(selector).first
+                parcel_locator = None
+                if parcel_selector:
+                    candidate = page.locator(parcel_selector).first
                     if await candidate.count() > 0:
                         parcel_locator = candidate
-                        break
+                else:
+                    heuristics = [
+                        'input[id*="parcel" i]',
+                        'input[name*="parcel" i]',
+                        'input[placeholder*="parcel" i]',
+                        'input[id*="property" i]',
+                        'input[name*="property" i]',
+                    ]
+                    for selector in heuristics:
+                        candidate = page.locator(selector).first
+                        if await candidate.count() > 0:
+                            parcel_locator = candidate
+                            break
 
-            if parcel_locator is None:
-                raise RuntimeError("Could not find parcel input field")
+                if parcel_locator is None:
+                    raise RuntimeError("Could not find parcel input field")
 
-            await parcel_locator.fill(parcel_id)
+                await parcel_locator.fill(parcel_id)
 
-            clicked = False
-            if search_selector:
-                button = page.locator(search_selector).first
-                if await button.count() > 0:
-                    await button.click()
-                    clicked = True
-            if not clicked:
-                for selector in ['button:has-text("Search")', 'button:has-text("Submit")', 'input[type="submit"]']:
-                    button = page.locator(selector).first
+                clicked = False
+                if search_selector:
+                    button = page.locator(search_selector).first
                     if await button.count() > 0:
                         await button.click()
                         clicked = True
-                        break
-            if not clicked:
-                raise RuntimeError("Could not find search/submit button")
+                if not clicked:
+                    for selector in ['button:has-text("Search")', 'button:has-text("Submit")', 'input[type="submit"]']:
+                        button = page.locator(selector).first
+                        if await button.count() > 0:
+                            await button.click()
+                            clicked = True
+                            break
+                if not clicked:
+                    raise RuntimeError("Could not find search/submit button")
 
-            if results_selector:
-                await page.locator(results_selector).first.wait_for(timeout=10000)
-            else:
-                await page.wait_for_timeout(1000)
+                if results_selector:
+                    await page.locator(results_selector).first.wait_for(timeout=10000)
+                else:
+                    await page.wait_for_timeout(1000)
 
-            body_text = await page.inner_text("body")
-            sample = body_text[:500]
-            match = re.search(balance_regex, body_text)
-            if not match:
-                raise RuntimeError(f"Could not extract balance using regex: {balance_regex}")
+                body_text = await page.inner_text("body")
+                sample = body_text[:500]
+                match = re.search(balance_regex, body_text)
+                if not match:
+                    raise RuntimeError(f"Could not extract balance using regex: {balance_regex}")
 
             money = match.group(1) if match.groups() else match.group(0)
             cleaned = re.sub(r"[^0-9.]", "", money)
@@ -122,6 +221,7 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                     "parcel_id": parcel_id,
                     "extracted_text_sample": sample,
                     "regex_used": balance_regex,
+                    "checkpoint": checkpoint_evidence,
                 },
             }
     except (PlaywrightTimeoutError, Exception) as exc:

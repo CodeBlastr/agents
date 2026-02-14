@@ -10,6 +10,9 @@ const EMPTY_CONFIG = {
     search_button_selector: '',
     results_container_selector: '',
     balance_regex: '',
+    pre_steps: '[]',
+    checkpoint_selector: '',
+    checkpoint_min_count: '',
   },
 }
 
@@ -44,6 +47,12 @@ export default function App() {
         search_button_selector: data.portal_profile?.search_button_selector || '',
         results_container_selector: data.portal_profile?.results_container_selector || '',
         balance_regex: data.portal_profile?.balance_regex || '',
+        pre_steps: JSON.stringify(data.portal_profile?.pre_steps || [], null, 2),
+        checkpoint_selector: data.portal_profile?.checkpoint_selector || '',
+        checkpoint_min_count:
+          data.portal_profile?.checkpoint_min_count === null || data.portal_profile?.checkpoint_min_count === undefined
+            ? ''
+            : String(data.portal_profile.checkpoint_min_count),
       },
     })
   }
@@ -101,6 +110,22 @@ export default function App() {
     setSavingConfig(true)
     setError('')
     try {
+      let parsedPreSteps
+      try {
+        parsedPreSteps = JSON.parse(config.portal_profile.pre_steps || '[]')
+      } catch {
+        throw new Error('Pre-steps must be valid JSON')
+      }
+      if (!Array.isArray(parsedPreSteps)) {
+        throw new Error('Pre-steps JSON must be an array')
+      }
+
+      const minCountRaw = config.portal_profile.checkpoint_min_count
+      const checkpointMinCount = minCountRaw === '' ? null : Number(minCountRaw)
+      if (checkpointMinCount !== null && (!Number.isInteger(checkpointMinCount) || checkpointMinCount < 0)) {
+        throw new Error('Checkpoint Min Count must be a non-negative integer')
+      }
+
       const payload = {
         parcel_id: config.parcel_id,
         portal_url: config.portal_url,
@@ -109,6 +134,9 @@ export default function App() {
           search_button_selector: config.portal_profile.search_button_selector || null,
           results_container_selector: config.portal_profile.results_container_selector || null,
           balance_regex: config.portal_profile.balance_regex || null,
+          pre_steps: parsedPreSteps,
+          checkpoint_selector: config.portal_profile.checkpoint_selector || null,
+          checkpoint_min_count: checkpointMinCount,
         },
       }
       const res = await fetch(`${API_BASE}/api/bots/tax/config`, {
@@ -179,6 +207,23 @@ export default function App() {
                     <label>
                       Balance Regex (optional)
                       <input value={config.portal_profile.balance_regex} onChange={(e) => updateProfile('balance_regex', e.target.value)} />
+                    </label>
+                    <label>
+                      Pre-steps JSON (optional)
+                      <textarea value={config.portal_profile.pre_steps} onChange={(e) => updateProfile('pre_steps', e.target.value)} rows={8} />
+                    </label>
+                    <label>
+                      Checkpoint Selector (optional)
+                      <input value={config.portal_profile.checkpoint_selector} onChange={(e) => updateProfile('checkpoint_selector', e.target.value)} />
+                    </label>
+                    <label>
+                      Checkpoint Min Count (optional)
+                      <input
+                        type="number"
+                        min="0"
+                        value={config.portal_profile.checkpoint_min_count}
+                        onChange={(e) => updateProfile('checkpoint_min_count', e.target.value)}
+                      />
                     </label>
                     <button onClick={saveConfig} disabled={savingConfig}>
                       {savingConfig ? 'Saving...' : 'Save'}
