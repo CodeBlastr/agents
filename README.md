@@ -15,10 +15,6 @@ docker compose up -d --build
 - Backend: http://localhost:8000
 - Health: http://localhost:8000/api/health
 
-## Scraper mode selection in UI
-
-Tax Bot scraper mode is now configured in the dashboard (no `USE_REAL_SCRAPER=1` prefix needed).
-
 1. Open http://localhost:3000
 2. Expand **Tax Bot v0** → **Edit Config**.
 3. Use **Scraper Mode** dropdown:
