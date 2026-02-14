@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 const API_BASE = 'http://localhost:8000'
 
@@ -37,9 +37,25 @@ function toArtifactUrl(path) {
 
 function collectArtifactPaths(details) {
   const artifacts = details?.artifacts || {}
-  return Object.entries(artifacts)
-    .filter(([, value]) => typeof value === 'string' && value.length > 0)
+  const singles = Object.entries(artifacts)
+    .filter(([key, value]) => key !== 'screenshots' && typeof value === 'string' && value.length > 0)
     .map(([key, value]) => ({ key, path: value, url: toArtifactUrl(value) }))
+
+  const sequence = Array.isArray(artifacts.screenshots)
+    ? artifacts.screenshots
+      .filter((item) => item?.path)
+      .map((item, idx) => ({
+        key: item.label || `step_${idx + 1}`,
+        path: item.path,
+        url: toArtifactUrl(item.path),
+      }))
+    : []
+
+  const dedup = new Map()
+  ;[...sequence, ...singles].forEach((item) => {
+    dedup.set(item.path, item)
+  })
+  return [...dedup.values()]
 }
 
 export default function App() {
@@ -54,6 +70,10 @@ export default function App() {
   const [running, setRunning] = useState(false)
   const [lastRunResult, setLastRunResult] = useState(null)
   const [lastRunDetails, setLastRunDetails] = useState(null)
+  const [liveScreenshots, setLiveScreenshots] = useState([])
+  const [liveRunInfo, setLiveRunInfo] = useState(null)
+
+  const streamRef = useRef(null)
 
   const loadBots = async () => {
     const res = await fetch(`${API_BASE}/api/bots`)
@@ -108,26 +128,76 @@ export default function App() {
 
   useEffect(() => {
     loadAll()
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.close()
+      }
+    }
   }, [])
+
+  const appendLiveScreenshot = (payload) => {
+    if (!payload?.path) return
+    setLiveScreenshots((prev) => {
+      if (prev.some((item) => item.path === payload.path)) return prev
+      return [...prev, {
+        key: payload.label || `live_${prev.length + 1}`,
+        path: payload.path,
+        url: toArtifactUrl(payload.path),
+      }]
+    })
+  }
+
+  const connectRunStream = (runId) => {
+    if (streamRef.current) {
+      streamRef.current.close()
+    }
+    const source = new EventSource(`${API_BASE}/api/bots/tax/runs/${runId}/events`)
+    streamRef.current = source
+
+    source.onmessage = async (event) => {
+      const payload = JSON.parse(event.data)
+      setLiveRunInfo(payload)
+
+      if (payload.type === 'screenshot_created') {
+        appendLiveScreenshot(payload)
+      }
+
+      if (payload.type === 'run_finished') {
+        setRunning(false)
+        source.close()
+        streamRef.current = null
+        if (payload.result) {
+          setLastRunResult(payload.result)
+          await loadRunDetails(payload.result.run_id)
+        }
+        await Promise.all([loadBots(), loadNotifications()])
+      }
+    }
+
+    source.onerror = () => {
+      source.close()
+      streamRef.current = null
+      setRunning(false)
+    }
+  }
 
   const runTaxBot = async () => {
     setRunning(true)
     setError('')
+    setLiveScreenshots([])
+    setLiveRunInfo(null)
+    setLastRunResult(null)
+    setLastRunDetails(null)
     try {
-      const res = await fetch(`${API_BASE}/api/bots/tax/run`, { method: 'POST' })
+      const res = await fetch(`${API_BASE}/api/bots/tax/run/start`, { method: 'POST' })
       if (!res.ok) {
         const body = await res.json()
-        throw new Error(body.detail || 'Run failed')
+        throw new Error(body.detail || 'Run start failed')
       }
       const data = await res.json()
-      setLastRunResult(data)
-      if (data?.run_id) {
-        await loadRunDetails(data.run_id)
-      }
-      await Promise.all([loadBots(), loadNotifications()])
+      connectRunStream(data.run_id)
     } catch (e) {
       setError(`Run failed: ${e.message}`)
-    } finally {
       setRunning(false)
     }
   }
@@ -185,6 +255,7 @@ export default function App() {
   }
 
   const artifactItems = collectArtifactPaths(lastRunDetails?.details)
+  const streamItems = liveScreenshots.length > 0 ? liveScreenshots : artifactItems
 
   return (
     <main className="container">
@@ -195,15 +266,33 @@ export default function App() {
         {bots.map((bot) => (
           <article key={bot.slug} className="card">
             <h2>{bot.name}</h2>
-            <p><strong>Last Run:</strong> {fmt(bot.last_run)}</p>
-            <p><strong>Status:</strong> {fmt(bot.last_status)}</p>
-            <p><strong>Run mode:</strong> <span className={`mode-badge mode-${(bot.mode || 'unknown').toLowerCase()}`}>{modeLabel(bot.mode)}</span></p>
-            <p><strong>Run type:</strong> {fmt(bot.run_type)}</p>
-            <p><strong>Current Balance:</strong> {fmt(bot.current_balance_due)}</p>
-            <p><strong>Previous Balance:</strong> {fmt(bot.previous_balance_due)}</p>
-            <p><strong>Changed:</strong> {bot.changed ? 'yes' : 'no'}</p>
-            {bot.slug === 'tax' && (
+            {bot.slug === 'tax' ? (
               <>
+                <div className="run-top-grid">
+                  <div>
+                    <p><strong>Last Run:</strong> {fmt(bot.last_run)}</p>
+                    <p><strong>Status:</strong> {fmt(bot.last_status)}</p>
+                    <p><strong>Run mode:</strong> <span className={`mode-badge mode-${(bot.mode || 'unknown').toLowerCase()}`}>{modeLabel(bot.mode)}</span></p>
+                    <p><strong>Run type:</strong> {fmt(bot.run_type)}</p>
+                    <p><strong>Current Balance:</strong> {fmt(bot.current_balance_due)}</p>
+                    <p><strong>Previous Balance:</strong> {fmt(bot.previous_balance_due)}</p>
+                    <p><strong>Changed:</strong> {bot.changed ? 'yes' : 'no'}</p>
+                    {running && (
+                      <p><strong>Live Event:</strong> {fmt(liveRunInfo?.type)}</p>
+                    )}
+                  </div>
+                  <div className="live-stream-panel">
+                    <h4>Live Screens</h4>
+                    {streamItems.length === 0 && <p>No screenshots yet.</p>}
+                    {streamItems.map((item) => (
+                      <figure key={`${item.path}-${item.key}`}>
+                        <figcaption><strong>{item.key}</strong> — {item.path}</figcaption>
+                        <img src={item.url} alt={item.key} className="artifact-image" />
+                      </figure>
+                    ))}
+                  </div>
+                </div>
+
                 <button onClick={runTaxBot} disabled={running}>
                   {running ? 'Running...' : 'Run Now'}
                 </button>
@@ -275,6 +364,16 @@ export default function App() {
                   </div>
                 )}
               </>
+            ) : (
+              <>
+                <p><strong>Last Run:</strong> {fmt(bot.last_run)}</p>
+                <p><strong>Status:</strong> {fmt(bot.last_status)}</p>
+                <p><strong>Run mode:</strong> <span className={`mode-badge mode-${(bot.mode || 'unknown').toLowerCase()}`}>{modeLabel(bot.mode)}</span></p>
+                <p><strong>Run type:</strong> {fmt(bot.run_type)}</p>
+                <p><strong>Current Balance:</strong> {fmt(bot.current_balance_due)}</p>
+                <p><strong>Previous Balance:</strong> {fmt(bot.previous_balance_due)}</p>
+                <p><strong>Changed:</strong> {bot.changed ? 'yes' : 'no'}</p>
+              </>
             )}
           </article>
         ))}
@@ -306,18 +405,6 @@ export default function App() {
               <p><strong>Min Count:</strong> {fmt(lastRunDetails.details.checkpoint_min_count)}</p>
               <p><strong>URL:</strong> {fmt(lastRunDetails.details.checkpoint_url)}</p>
               <p><strong>Excerpt:</strong> {fmt(lastRunDetails.details.checkpoint_text_excerpt)}</p>
-            </div>
-          )}
-
-          {artifactItems.length > 0 && (
-            <div className="run-proof">
-              <h4>Run Screenshots</h4>
-              {artifactItems.map((item) => (
-                <figure key={item.key}>
-                  <figcaption><strong>{item.key}</strong> — {item.path}</figcaption>
-                  <img src={item.url} alt={item.key} className="artifact-image" />
-                </figure>
-              ))}
             </div>
           )}
         </section>

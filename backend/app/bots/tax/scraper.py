@@ -22,10 +22,24 @@ def _artifact_path(run_id: int | None, label: str) -> str:
     return str(base.with_name(f"{stem}_{run_part}_{label}_{ts}{suffix}"))
 
 
-def scrape_tax_data(parcel_id: str, portal_url: str, portal_profile: dict, run_id: int | None = None) -> dict:
+def scrape_tax_data(
+    parcel_id: str,
+    portal_url: str,
+    portal_profile: dict,
+    run_id: int | None = None,
+    event_callback=None,
+) -> dict:
     use_real = os.getenv("USE_REAL_SCRAPER", "0") == "1"
     if use_real:
-        return asyncio.run(scrape_tax_portal(parcel_id, portal_url, portal_profile, run_id=run_id))
+        return asyncio.run(
+            scrape_tax_portal(
+                parcel_id,
+                portal_url,
+                portal_profile,
+                run_id=run_id,
+                event_callback=event_callback,
+            )
+        )
     return _scrape_stub(parcel_id, portal_url)
 
 
@@ -63,7 +77,17 @@ async def _get_locator(page, step: dict):
     raise RuntimeError("Step must include either 'selector' or 'text'")
 
 
-async def _run_pre_steps(page, pre_steps: list[dict]):
+async def _capture_artifact(page, run_id: int | None, label: str, artifacts: list[dict], event_callback=None) -> str:
+    path = _artifact_path(run_id, label)
+    await page.screenshot(path=path, full_page=True)
+    entry = {"label": label, "path": path, "url": page.url}
+    artifacts.append(entry)
+    if event_callback:
+        event_callback({"type": "screenshot_created", **entry})
+    return path
+
+
+async def _run_pre_steps(page, pre_steps: list[dict], run_id: int | None, artifacts: list[dict], event_callback=None):
     for idx, step in enumerate(pre_steps, start=1):
         action = (step.get("action") or "").strip().lower()
         timeout_ms = int(step.get("timeout_ms") or 10000)
@@ -98,6 +122,7 @@ async def _run_pre_steps(page, pre_steps: list[dict]):
                 "Unsupported pre-step action. Supported actions: "
                 "click, check, fill, wait_for_selector, wait_for_url, wait_for_timeout"
             )
+        await _capture_artifact(page, run_id, f"pre_step_{idx}_{action}", artifacts, event_callback)
 
 
 async def _checkpoint_proof(page, checkpoint_selector: str | None, checkpoint_min_count: int | None) -> dict:
@@ -124,7 +149,13 @@ async def _checkpoint_proof(page, checkpoint_selector: str | None, checkpoint_mi
     }
 
 
-async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dict, run_id: int | None = None) -> dict:
+async def scrape_tax_portal(
+    parcel_id: str,
+    portal_url: str,
+    portal_profile: dict,
+    run_id: int | None = None,
+    event_callback=None,
+) -> dict:
     parcel_selector = portal_profile.get("parcel_selector")
     search_selector = portal_profile.get("search_button_selector")
     results_selector = portal_profile.get("results_container_selector")
@@ -135,18 +166,25 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
     stop_after_checkpoint = bool(portal_profile.get("stop_after_checkpoint"))
 
     page = None
+    artifacts: list[dict] = []
     try:
         async with async_playwright() as playwright:
             browser = await playwright.chromium.launch(headless=True)
             page = await browser.new_page()
             await page.goto(portal_url, wait_until="networkidle", timeout=30000)
+            await _capture_artifact(page, run_id, "initial_page", artifacts, event_callback)
 
-            await _run_pre_steps(page, pre_steps)
+            await _run_pre_steps(page, pre_steps, run_id, artifacts, event_callback)
             checkpoint = await _checkpoint_proof(page, checkpoint_selector, checkpoint_min_count)
+            if checkpoint and event_callback:
+                event_callback({"type": "checkpoint_validated", **checkpoint})
+            if checkpoint:
+                await _capture_artifact(page, run_id, "checkpoint", artifacts, event_callback)
 
             if stop_after_checkpoint:
                 success_path = _artifact_path(run_id, "checkpoint")
                 await page.screenshot(path=success_path, full_page=True)
+                artifacts.append({"label": "checkpoint_final", "path": success_path, "url": page.url})
                 await browser.close()
                 return {
                     "mode": "real",
@@ -161,7 +199,10 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                         "portal_url": portal_url,
                         "parcel_id": parcel_id,
                         "note": "Stopped after checkpoint by configuration",
-                        "artifacts": {"checkpoint_screenshot": success_path},
+                        "artifacts": {
+                            "checkpoint_screenshot": success_path,
+                            "screenshots": artifacts,
+                        },
                         **checkpoint,
                     },
                 }
@@ -196,12 +237,14 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                 if await button.count() > 0:
                     await button.click()
                     clicked = True
+                    await _capture_artifact(page, run_id, "after_search_click", artifacts, event_callback)
             if not clicked:
                 for selector in ['button:has-text("Search")', 'button:has-text("Submit")', 'input[type="submit"]']:
                     button = page.locator(selector).first
                     if await button.count() > 0:
                         await button.click()
                         clicked = True
+                        await _capture_artifact(page, run_id, "after_search_click", artifacts, event_callback)
                         break
             if not clicked:
                 raise RuntimeError("Could not find search/submit button")
@@ -210,6 +253,7 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                 await page.locator(results_selector).first.wait_for(timeout=10000)
             else:
                 await page.wait_for_timeout(1000)
+            await _capture_artifact(page, run_id, "after_results", artifacts, event_callback)
 
             body_text = await page.inner_text("body")
             sample = body_text[:500]
@@ -224,6 +268,9 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
 
             success_path = _artifact_path(run_id, "success")
             await page.screenshot(path=success_path, full_page=True)
+            artifacts.append({"label": "success", "path": success_path, "url": page.url})
+            if event_callback:
+                event_callback({"type": "screenshot_created", "label": "success", "path": success_path, "url": page.url})
 
             await browser.close()
             return {
@@ -240,7 +287,10 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
                     "parcel_id": parcel_id,
                     "extracted_text_sample": sample,
                     "regex_used": balance_regex,
-                    "artifacts": {"result_screenshot": success_path},
+                    "artifacts": {
+                        "result_screenshot": success_path,
+                        "screenshots": artifacts,
+                    },
                     **checkpoint,
                 },
             }
@@ -250,6 +300,9 @@ async def scrape_tax_portal(parcel_id: str, portal_url: str, portal_profile: dic
         if page is not None:
             try:
                 await page.screenshot(path=error_path, full_page=True)
+                artifacts.append({"label": "error", "path": error_path, "url": page.url})
+                if event_callback:
+                    event_callback({"type": "screenshot_created", "label": "error", "path": error_path, "url": page.url})
             except Exception:
                 pass
             try:
