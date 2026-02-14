@@ -1,19 +1,59 @@
 from datetime import datetime, timezone
+
 from sqlalchemy import and_, desc
 from sqlalchemy.orm import Session
 
-from app.models import Bot, BotRun, Notification, TaxSnapshot
+from app.models import Bot, BotConfig, BotRun, Notification, TaxSnapshot
+
+DEFAULT_TAX_CONFIG = {
+    "parcel_id": "DEMO",
+    "portal_url": "https://example.com",
+    "portal_profile": {
+        "parcel_selector": None,
+        "search_button_selector": None,
+        "results_container_selector": None,
+        "balance_regex": r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)",
+    },
+}
 
 
 def seed_tax_bot(db: Session) -> Bot:
     bot = db.query(Bot).filter(Bot.slug == "tax").first()
-    if bot:
-        return bot
-    bot = Bot(slug="tax", name="Tax Bot v0")
-    db.add(bot)
-    db.commit()
-    db.refresh(bot)
+    if not bot:
+        bot = Bot(slug="tax", name="Tax Bot v0")
+        db.add(bot)
+        db.commit()
+        db.refresh(bot)
+
+    ensure_tax_config(db, bot)
     return bot
+
+
+def ensure_tax_config(db: Session, bot: Bot) -> BotConfig:
+    config = db.query(BotConfig).filter(BotConfig.bot_id == bot.id, BotConfig.key == "tax.default").first()
+    if config:
+        return config
+
+    config = BotConfig(bot_id=bot.id, key="tax.default", config_json=DEFAULT_TAX_CONFIG)
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
+
+
+def get_tax_config(db: Session, bot: Bot) -> dict:
+    config = ensure_tax_config(db, bot)
+    return config.config_json
+
+
+def upsert_tax_config(db: Session, bot: Bot, config_json: dict) -> dict:
+    config = ensure_tax_config(db, bot)
+    config.config_json = config_json
+    config.updated_at = datetime.now(timezone.utc)
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config.config_json
 
 
 def list_bot_summaries(db: Session) -> list[dict]:
@@ -59,6 +99,17 @@ def list_bot_summaries(db: Session) -> list[dict]:
             }
         )
     return summaries
+
+
+def list_notifications(db: Session, bot_slug: str, limit: int) -> list[Notification]:
+    return (
+        db.query(Notification)
+        .join(Bot, Notification.bot_id == Bot.id)
+        .filter(Bot.slug == bot_slug)
+        .order_by(desc(Notification.created_at))
+        .limit(limit)
+        .all()
+    )
 
 
 def create_run(db: Session, bot_id: int) -> BotRun:

@@ -6,10 +6,14 @@ from app.bots.tax.scraper import scrape_tax_data
 from app.models import Bot
 
 
-def run_tax_bot(db: Session, bot: Bot) -> dict:
+def run_tax_bot(db: Session, bot: Bot, config: dict) -> dict:
     run = crud.create_run(db, bot.id)
     try:
-        scraped = scrape_tax_data()
+        scraped = scrape_tax_data(
+            parcel_id=config["parcel_id"],
+            portal_url=config["portal_url"],
+            portal_profile=config.get("portal_profile") or {},
+        )
         parsed = parse_tax_data(scraped)
 
         previous = crud.latest_previous_snapshot(db, bot.id, parsed["parcel_id"], parsed["portal_url"])

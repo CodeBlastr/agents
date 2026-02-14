@@ -1,4 +1,7 @@
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, Numeric, String, Text
+import uuid
+
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -16,6 +19,7 @@ class Bot(Base):
     runs = relationship("BotRun", back_populates="bot")
     snapshots = relationship("TaxSnapshot", back_populates="bot")
     notifications = relationship("Notification", back_populates="bot")
+    configs = relationship("BotConfig", back_populates="bot")
 
 
 class BotRun(Base):
@@ -40,8 +44,8 @@ class TaxSnapshot(Base):
     parcel_id = Column(String(255), nullable=False, index=True)
     portal_url = Column(String(1024), nullable=False, index=True)
     balance_due = Column(Numeric(12, 2), nullable=False)
-    paid_status = Column(String(64), nullable=False)
-    due_date = Column(String(64), nullable=False)
+    paid_status = Column(String(64), nullable=True)
+    due_date = Column(String(64), nullable=True)
     raw_json = Column(JSON, nullable=False)
 
     bot = relationship("Bot", back_populates="snapshots")
@@ -57,3 +61,17 @@ class Notification(Base):
     message = Column(Text, nullable=False)
 
     bot = relationship("Bot", back_populates="notifications")
+
+
+class BotConfig(Base):
+    __tablename__ = "bot_configs"
+    __table_args__ = (UniqueConstraint("bot_id", "key", name="uq_bot_configs_bot_id_key"),)
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    bot_id = Column(Integer, ForeignKey("bots.id"), nullable=False, index=True)
+    key = Column(String(255), nullable=False)
+    config_json = Column(JSONB, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    bot = relationship("Bot", back_populates="configs")
