@@ -13,3 +13,14 @@ The Admin Dashboard widget should only show the latest info from the database.
 There should be a button to refresh the data from all provided urls. This updates the database first, and then updates the info displayed in real time, and gives detailed information for debugging if the refresh fails for any reason.  Not retrieving structured table data is considered a failure. 
 
 I want to send a text message - for free - to `NOTIFICATION_TEXT_PHONE` value from the env. 
+---
+
+## Execution Notes (2026-02-14)
+
+- Implemented Agent Admin Dashboard v2 with no outbound email/text notification features.
+- Added Docker-first backend/frontend/db stack with bind mounts and frontend exposed at `http://localhost:${DASHBOARD_PORT}`.
+- Implemented fixed Syracuse URL scraping with redirect-aware waits, artifacts capture, and strict failure when structured tables are not extracted.
+- Added persisted property snapshots by property address and timestamp (`tax_property_snapshots`) plus run diagnostics in `bot_runs`.
+- Implemented required v2 API surface for bot list/detail, latest rows, property history, refresh runs, run details, and SSE events.
+- Implemented index and detail dashboard views with real-time run event timeline and diagnostics.
+- Added deterministic backend tests for smoke, runner success/failure commit behavior, and scraper helper extraction.

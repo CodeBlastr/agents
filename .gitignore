@@ -1,1 +1,8 @@
 .env
+__pycache__/
+*.pyc
+backend/.pytest_cache/
+backend/.mypy_cache/
+frontend/node_modules/
+artifacts/*
+!artifacts/.gitkeep
