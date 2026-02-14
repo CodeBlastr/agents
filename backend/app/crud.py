@@ -19,10 +19,10 @@ DEFAULT_TAX_CONFIG = {
         "checkpoint_min_count": None,
         "stop_after_checkpoint": False,
         "scraper_mode": "real",
-        "results_row_selector": "table tr",
-        "row_first_link_selector": "td:first-child a",
+        "results_row_selector": "#tblList > tbody > tr",
+        "row_first_link_selector": "td:nth-child(1) a",
         "detail_table_selector": "table",
-        "max_properties": 3,
+        "max_properties": 0,
     },
 }
 
