@@ -7,7 +7,7 @@ from decimal import Decimal
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from playwright.async_api import async_playwright
 
-ERROR_SCREENSHOT_PATH = "/tmp/taxbot_last_error.png"
+ERROR_SCREENSHOT_PATH = os.getenv("TAXBOT_ERROR_SCREENSHOT_PATH", "/artifacts/taxbot_last_error.png")
 DEFAULT_BALANCE_REGEX = r"\$?\s*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]{2})?)"
 
 
